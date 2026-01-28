@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "pdfread",
-        "width": 800,
-        "height": 600
+        "width": 1400,
+        "height": 850
       }
     ],
     "security": {
