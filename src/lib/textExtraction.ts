@@ -301,19 +301,7 @@ function groupIntoParagraphsVertical(columns: Line[]): Paragraph[] {
   return paragraphs;
 }
 
-function splitParagraphIntoSentences(paragraph: Paragraph): { text: string; items: GlyphItem[] }[] {
-  const ranges: { item: GlyphItem; start: number; end: number }[] = [];
-  let text = "";
-
-  for (const item of paragraph.items) {
-    if (text.length > 0 && !text.endsWith(" ")) {
-      text += " ";
-    }
-    const start = text.length;
-    text += item.text;
-    ranges.push({ item, start, end: text.length });
-  }
-
+function splitIntoSentences(text: string, ranges: { item: GlyphItem; start: number; end: number }[]): { text: string; items: GlyphItem[] }[] {
   const sentenceRegex = /[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g;
   const results: { text: string; items: GlyphItem[] }[] = [];
   let match: RegExpExecArray | null;
@@ -335,6 +323,28 @@ function splitParagraphIntoSentences(paragraph: Paragraph): { text: string; item
   }
 
   return results;
+}
+
+function mergeParagraphsIntoSentences(paragraphs: Paragraph[]): { text: string; items: GlyphItem[] }[] {
+  if (paragraphs.length === 0) return [];
+
+  // First, build full text and ranges from all paragraphs
+  const allRanges: { item: GlyphItem; start: number; end: number }[] = [];
+  let fullText = "";
+
+  for (const paragraph of paragraphs) {
+    for (const item of paragraph.items) {
+      if (fullText.length > 0 && !fullText.endsWith(" ")) {
+        fullText += " ";
+      }
+      const start = fullText.length;
+      fullText += item.text;
+      allRanges.push({ item, start, end: fullText.length });
+    }
+  }
+
+  // Split into sentences using the full text
+  return splitIntoSentences(fullText, allRanges);
 }
 
 function buildSentenceRects(page: number, items: GlyphItem[]): { page: number; x: number; y: number; w: number; h: number }[] {
@@ -393,20 +403,19 @@ export async function extractPageSentences(
         const lines = groupIntoHorizontalLines(columnItems);
         const paragraphs = groupIntoParagraphsHorizontal(lines);
 
-        for (const paragraph of paragraphs) {
-          const sentenceParts = splitParagraphIntoSentences(paragraph);
-          for (const part of sentenceParts) {
-            const source = part.text;
-            const hash = hashString(source);
-            const sid = `${docId}:p${pageIndex + 1}:${hash}`;
-            sentences.push({
-              sid,
-              page: pageIndex + 1,
-              source,
-              status: "idle",
-              rects: buildSentenceRects(pageIndex + 1, part.items),
-            });
-          }
+        // Merge all paragraphs into complete sentences
+        const sentenceParts = mergeParagraphsIntoSentences(paragraphs);
+        for (const part of sentenceParts) {
+          const source = part.text;
+          const hash = hashString(source);
+          const sid = `${docId}:p${pageIndex + 1}:${hash}`;
+          sentences.push({
+            sid,
+            page: pageIndex + 1,
+            source,
+            status: "idle",
+            rects: buildSentenceRects(pageIndex + 1, part.items),
+          });
         }
       }
 
@@ -418,22 +427,21 @@ export async function extractPageSentences(
   const lines = mode === "vertical" ? groupIntoVerticalColumns(glyphs) : groupIntoHorizontalLines(glyphs);
   const paragraphs = mode === "vertical" ? groupIntoParagraphsVertical(lines) : groupIntoParagraphsHorizontal(lines);
 
+  // Merge all paragraphs into complete sentences
+  const sentenceParts = mergeParagraphsIntoSentences(paragraphs);
   const sentences: Sentence[] = [];
 
-  for (const paragraph of paragraphs) {
-    const sentenceParts = splitParagraphIntoSentences(paragraph);
-    for (const part of sentenceParts) {
-      const source = part.text;
-      const hash = hashString(source);
-      const sid = `${docId}:p${pageIndex + 1}:${hash}`;
-      sentences.push({
-        sid,
-        page: pageIndex + 1,
-        source,
-        status: "idle",
-        rects: buildSentenceRects(pageIndex + 1, part.items),
-      });
-    }
+  for (const part of sentenceParts) {
+    const source = part.text;
+    const hash = hashString(source);
+    const sid = `${docId}:p${pageIndex + 1}:${hash}`;
+    sentences.push({
+      sid,
+      page: pageIndex + 1,
+      source,
+      status: "idle",
+      rects: buildSentenceRects(pageIndex + 1, part.items),
+    });
   }
 
   return sentences;

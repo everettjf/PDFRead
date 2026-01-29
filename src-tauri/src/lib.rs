@@ -22,6 +22,14 @@ struct TranslationResult {
     translation: String,
 }
 
+// Flexible struct to handle various LLM response formats
+#[derive(Debug, Deserialize)]
+struct FlexibleTranslationResult {
+    sid: String,
+    #[serde(alias = "translation", alias = "translated_text", alias = "text", alias = "translated")]
+    translation: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenRouterMessage {
     content: String,
@@ -199,8 +207,77 @@ async fn request_openrouter(
 }
 
 fn parse_translation_json(content: &str) -> Result<Vec<TranslationResult>, String> {
-    let parsed: Vec<TranslationResult> = serde_json::from_str(content).map_err(|e| e.to_string())?;
-    Ok(parsed)
+    // Try to extract JSON array from the content (handle markdown code blocks)
+    let json_content = extract_json_array(content);
+
+    // Try flexible parsing first
+    let parsed: Vec<FlexibleTranslationResult> = serde_json::from_str(&json_content)
+        .map_err(|e| format!("{} (content: {})", e, truncate_for_error(&json_content)))?;
+
+    // Convert to TranslationResult, filtering out items without translation
+    let results: Vec<TranslationResult> = parsed
+        .into_iter()
+        .filter_map(|item| {
+            item.translation.map(|t| TranslationResult {
+                sid: item.sid,
+                translation: t,
+            })
+        })
+        .collect();
+
+    Ok(results)
+}
+
+fn extract_json_array(content: &str) -> String {
+    let trimmed = content.trim();
+
+    // If it starts with [, it's already JSON
+    if trimmed.starts_with('[') {
+        return trimmed.to_string();
+    }
+
+    // Try to extract from markdown code block
+    if let Some(start) = trimmed.find("```json") {
+        if let Some(end) = trimmed[start..].find("```\n").or_else(|| trimmed[start..].rfind("```")) {
+            let json_start = start + 7; // length of "```json"
+            let json_end = start + end;
+            if json_start < json_end {
+                return trimmed[json_start..json_end].trim().to_string();
+            }
+        }
+    }
+
+    // Try to extract from generic code block
+    if let Some(start) = trimmed.find("```") {
+        let after_tick = &trimmed[start + 3..];
+        if let Some(end) = after_tick.find("```") {
+            // Skip optional language identifier on first line
+            let block_content = &after_tick[..end];
+            if let Some(newline) = block_content.find('\n') {
+                return block_content[newline + 1..].trim().to_string();
+            }
+            return block_content.trim().to_string();
+        }
+    }
+
+    // Try to find JSON array in the content
+    if let Some(start) = trimmed.find('[') {
+        if let Some(end) = trimmed.rfind(']') {
+            if start < end {
+                return trimmed[start..=end].to_string();
+            }
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn truncate_for_error(s: &str) -> String {
+    if s.len() > 200 {
+        format!("{}...", &s[..200])
+    } else {
+        s.to_string()
+    }
 }
 
 fn hash_source_text(text: &str) -> String {
