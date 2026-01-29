@@ -12,9 +12,9 @@ import * as ScrollArea from "@radix-ui/react-scroll-area";
 import * as Toolbar from "@radix-ui/react-toolbar";
 import { PdfViewer } from "./components/PdfViewer";
 import { TranslationPane } from "./components/TranslationPane";
-import { extractPageSentences } from "./lib/textExtraction";
+import { extractPageParagraphs } from "./lib/textExtraction";
 import { hashBuffer } from "./lib/hash";
-import type { PageDoc, TranslationSettings, WordTranslation } from "./types";
+import type { PageDoc, TranslationSettings, WordTranslation, WordDefinition, VocabularyEntry } from "./types";
 import "./App.css";
 
 pdfjsLib.GlobalWorkerOptions.workerPort = new pdfjsWorker();
@@ -50,8 +50,8 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [scale, setScale] = useState<number>(1);
   const [settings, setSettings] = useState<TranslationSettings>(DEFAULT_SETTINGS);
-  const [hoverSid, setHoverSid] = useState<string | null>(null);
-  const [activeSid, setActiveSid] = useState<string | null>(null);
+  const [hoverPid, setHoverPid] = useState<string | null>(null);
+  const [activePid, setActivePid] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("Open a PDF to get started.");
   const [viewMode, setViewMode] = useState<"split" | "pdf" | "translation">("split");
   const [languageOpen, setLanguageOpen] = useState(false);
@@ -64,9 +64,11 @@ export default function App() {
   const [apiKeyTesting, setApiKeyTesting] = useState<boolean>(false);
   const [scrollToPage, setScrollToPage] = useState<number | null>(null);
   const [wordTranslation, setWordTranslation] = useState<WordTranslation | null>(null);
+  const [vocabularyOpen, setVocabularyOpen] = useState(false);
+  const [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]);
 
   const pagesRef = useRef<PageDoc[]>([]);
-  const wordTranslationCacheRef = useRef<Map<string, string>>(new Map());
+  const textTranslationCacheRef = useRef<Map<string, string>>(new Map());
   const settingsRef = useRef(settings);
   const docIdRef = useRef(docId);
   const translationRequestId = useRef(0);
@@ -74,7 +76,7 @@ export default function App() {
   const debounceRef = useRef<number | undefined>(undefined);
   const translateQueueRef = useRef<string[]>([]);
 
-  const highlightSid = hoverSid ?? activeSid;
+  const highlightPid = hoverPid ?? activePid;
 
   useEffect(() => {
     pagesRef.current = pages;
@@ -154,7 +156,7 @@ export default function App() {
       sizes.push({ width: viewport.width, height: viewport.height });
     }
 
-    const initialPages: PageDoc[] = sizes.map((_, index) => ({ page: index + 1, sentences: [] }));
+    const initialPages: PageDoc[] = sizes.map((_, index) => ({ page: index + 1, paragraphs: [] }));
 
     setPdfDoc(doc);
     setPageSizes(sizes);
@@ -165,13 +167,14 @@ export default function App() {
 
     for (let i = 1; i <= doc.numPages; i += 1) {
       const page = await doc.getPage(i);
-      const sentences = await extractPageSentences(page, nextDocId, i - 1);
+      const { paragraphs, watermarks } = await extractPageParagraphs(page, nextDocId, i - 1);
       setPages((prev) =>
-        prev.map((entry) => (entry.page === i ? { ...entry, sentences } : entry))
+        prev.map((entry) => (entry.page === i ? { ...entry, paragraphs, watermarks } : entry))
       );
     }
-    setStatusMessage("Ready. Click a sentence to translate.");
+    setStatusMessage("Ready. Click translate button or select text.");
   }, []);
+
   const runTranslateQueue = useCallback(async () => {
     if (translatingRef.current) return;
     if (!docIdRef.current) return;
@@ -181,11 +184,11 @@ export default function App() {
     if (uniqueQueue.length === 0) return;
 
     const pending = pagesRef.current
-      .flatMap((page) => page.sentences)
+      .flatMap((page) => page.paragraphs)
       .filter(
-        (sentence) =>
-          uniqueQueue.includes(sentence.sid) &&
-          (sentence.status === "idle" || sentence.status === "error")
+        (para) =>
+          uniqueQueue.includes(para.pid) &&
+          (para.status === "idle" || para.status === "error")
       );
 
     if (pending.length === 0) return;
@@ -196,16 +199,16 @@ export default function App() {
     setPages((prev) =>
       prev.map((page) => ({
         ...page,
-        sentences: page.sentences.map((sentence) =>
-          pending.some((item) => item.sid === sentence.sid)
-            ? { ...sentence, status: "loading" }
-            : sentence
+        paragraphs: page.paragraphs.map((para) =>
+          pending.some((item) => item.pid === para.pid)
+            ? { ...para, status: "loading" as const }
+            : para
         ),
       }))
     );
 
     try {
-      const payload = pending.map((sentence) => ({ sid: sentence.sid, text: sentence.source }));
+      const payload = pending.map((para) => ({ sid: para.pid, text: para.source }));
       const invokeWithTimeout = <T,>(promise: Promise<T>, timeoutMs: number) => {
         let timeoutId: number | undefined;
         const timeoutPromise = new Promise<T>((_, reject) => {
@@ -223,17 +226,17 @@ export default function App() {
           targetLanguage: currentSettings.targetLanguage,
           sentences: payload,
         }) as Promise<{ sid: string; translation: string }[]>,
-        30000
+        60000
       )) as { sid: string; translation: string }[];
 
       if (translationRequestId.current !== requestId) {
         setPages((prev) =>
           prev.map((page) => ({
             ...page,
-            sentences: page.sentences.map((sentence) =>
-              pending.some((item) => item.sid === sentence.sid) && sentence.status === "loading"
-                ? { ...sentence, status: "idle" }
-                : sentence
+            paragraphs: page.paragraphs.map((para) =>
+              pending.some((item) => item.pid === para.pid) && para.status === "loading"
+                ? { ...para, status: "idle" as const }
+                : para
             ),
           }))
         );
@@ -244,13 +247,13 @@ export default function App() {
       setPages((prev) =>
         prev.map((page) => ({
           ...page,
-          sentences: page.sentences.map((sentence) => {
-            if (!pending.some((item) => item.sid === sentence.sid)) return sentence;
-            const translation = translationMap.get(sentence.sid);
+          paragraphs: page.paragraphs.map((para) => {
+            if (!pending.some((item) => item.pid === para.pid)) return para;
+            const translation = translationMap.get(para.pid);
             if (!translation) {
-              return { ...sentence, status: "error" };
+              return { ...para, status: "error" as const };
             }
-            return { ...sentence, translation, status: "done" };
+            return { ...para, translation, status: "done" as const };
           }),
         }))
       );
@@ -258,10 +261,10 @@ export default function App() {
       setPages((prev) =>
         prev.map((page) => ({
           ...page,
-          sentences: page.sentences.map((sentence) =>
-            pending.some((item) => item.sid === sentence.sid)
-              ? { ...sentence, status: "error" }
-              : sentence
+          paragraphs: page.paragraphs.map((para) =>
+            pending.some((item) => item.pid === para.pid)
+              ? { ...para, status: "error" as const }
+              : para
           ),
         }))
       );
@@ -281,16 +284,16 @@ export default function App() {
     }
   }, []);
 
-  const handleTranslateSid = useCallback(
-    (sid: string) => {
+  const handleTranslatePid = useCallback(
+    (pid: string) => {
       if (!docIdRef.current) return;
-      const sentence = pagesRef.current
-        .flatMap((page) => page.sentences)
-        .find((item) => item.sid === sid);
-      if (!sentence) return;
-      if (sentence.status === "done" || sentence.status === "loading") return;
+      const para = pagesRef.current
+        .flatMap((page) => page.paragraphs)
+        .find((item) => item.pid === pid);
+      if (!para) return;
+      if (para.status === "done" || para.status === "loading") return;
 
-      translateQueueRef.current = Array.from(new Set([...translateQueueRef.current, sid]));
+      translateQueueRef.current = Array.from(new Set([...translateQueueRef.current, pid]));
       window.clearTimeout(debounceRef.current);
       debounceRef.current = window.setTimeout(() => {
         void runTranslateQueue();
@@ -299,37 +302,93 @@ export default function App() {
     [runTranslateQueue]
   );
 
-  const handleTranslateWord = useCallback(
-    async (word: string, position: { x: number; y: number }) => {
-      const normalizedWord = word.toLowerCase();
+  const handleLocatePid = useCallback(
+    (pid: string, page: number) => {
+      setActivePid(pid);
+      setScrollToPage(page);
+    },
+    []
+  );
+
+  const handleTranslateText = useCallback(
+    async (text: string, position: { x: number; y: number }) => {
+      const normalizedText = text.toLowerCase().trim();
+      const isSingleWord = /^[a-zA-Z]+$/.test(text.trim());
+
+      // Check if word is in vocabulary
+      let isLiked = false;
+      if (isSingleWord) {
+        try {
+          isLiked = await invoke<boolean>("is_word_in_vocabulary", { word: text });
+        } catch {
+          // Ignore error
+        }
+      }
 
       // Check cache first
-      const cached = wordTranslationCacheRef.current.get(normalizedWord);
+      const cached = textTranslationCacheRef.current.get(normalizedText);
       if (cached) {
-        setWordTranslation({ word, translation: cached, position });
+        try {
+          const parsed = JSON.parse(cached);
+          setWordTranslation({ word: text, ...parsed, position, isLiked });
+        } catch {
+          setWordTranslation({ word: text, definitions: [{ pos: "", meanings: cached }], position, isLiked });
+        }
         return;
       }
 
       // Show loading state
-      setWordTranslation({ word, translation: "", position });
+      setWordTranslation({ word: text, definitions: [], position, isLoading: true, isLiked });
 
       try {
         const currentSettings = settingsRef.current;
-        const results = (await invoke("openrouter_translate", {
-          model: currentSettings.model,
-          temperature: currentSettings.temperature,
-          targetLanguage: currentSettings.targetLanguage,
-          sentences: [{ sid: "word", text: word }],
-        })) as { sid: string; translation: string }[];
 
-        const translation = results[0]?.translation || "Translation failed";
+        if (isSingleWord) {
+          // Use dictionary lookup for single words
+          const result = (await invoke("openrouter_word_lookup", {
+            model: currentSettings.model,
+            targetLanguage: currentSettings.targetLanguage,
+            word: text,
+          })) as { phonetic?: string; definitions: WordDefinition[] };
 
-        // Cache the result
-        wordTranslationCacheRef.current.set(normalizedWord, translation);
+          // Cache the result
+          textTranslationCacheRef.current.set(normalizedText, JSON.stringify(result));
 
-        setWordTranslation({ word, translation, position });
+          setWordTranslation({
+            word: text,
+            phonetic: result.phonetic,
+            definitions: result.definitions || [],
+            position,
+            isLiked,
+          });
+        } else {
+          // Use regular translation for phrases
+          const results = (await invoke("openrouter_translate", {
+            model: currentSettings.model,
+            temperature: currentSettings.temperature,
+            targetLanguage: currentSettings.targetLanguage,
+            sentences: [{ sid: "text", text }],
+          })) as { sid: string; translation: string }[];
+
+          const translation = results[0]?.translation || "Translation failed";
+
+          // Cache the result
+          textTranslationCacheRef.current.set(normalizedText, translation);
+
+          setWordTranslation({
+            word: text,
+            definitions: [{ pos: "", meanings: translation }],
+            position,
+            isLiked,
+          });
+        }
       } catch (error) {
-        setWordTranslation({ word, translation: "Translation failed", position });
+        setWordTranslation({
+          word: text,
+          definitions: [{ pos: "", meanings: "Translation failed" }],
+          position,
+          isLiked,
+        });
       }
     },
     []
@@ -338,6 +397,54 @@ export default function App() {
   const handleClearWordTranslation = useCallback(() => {
     setWordTranslation(null);
   }, []);
+
+  const loadVocabulary = useCallback(async () => {
+    try {
+      const words = await invoke<VocabularyEntry[]>("get_vocabulary");
+      setVocabulary(words);
+    } catch (error) {
+      console.error("Failed to load vocabulary:", error);
+    }
+  }, []);
+
+  const handleToggleLikeWord = useCallback(async (word: WordTranslation) => {
+    try {
+      if (word.isLiked) {
+        await invoke("remove_vocabulary_word", { word: word.word });
+        setWordTranslation((prev) => prev ? { ...prev, isLiked: false } : null);
+      } else {
+        await invoke("add_vocabulary_word", {
+          word: word.word,
+          phonetic: word.phonetic || null,
+          definitions: word.definitions,
+        });
+        setWordTranslation((prev) => prev ? { ...prev, isLiked: true } : null);
+      }
+    } catch (error) {
+      console.error("Failed to toggle vocabulary word:", error);
+    }
+  }, []);
+
+  const handleExportVocabulary = useCallback(async () => {
+    try {
+      const markdown = await invoke<string>("export_vocabulary_markdown");
+      const blob = new Blob([markdown], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "vocabulary.md";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Failed to export vocabulary:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (vocabularyOpen) {
+      loadVocabulary();
+    }
+  }, [vocabularyOpen, loadVocabulary]);
 
   const handleZoomChange = (nextScale: number) => {
     setScale(nextScale);
@@ -445,6 +552,65 @@ export default function App() {
               </Select.Item>
             </Select.Content>
           </Select.Root>
+          <Dialog.Root open={vocabularyOpen} onOpenChange={setVocabularyOpen}>
+            <Dialog.Trigger asChild>
+              <Toolbar.Button className="btn">Vocabulary</Toolbar.Button>
+            </Dialog.Trigger>
+            <Dialog.Portal>
+              <Dialog.Overlay className="dialog-overlay" />
+              <Dialog.Content className="dialog-content dialog-content-vocabulary">
+                <Dialog.Title className="dialog-title">Vocabulary</Dialog.Title>
+                <Dialog.Description className="dialog-description">
+                  Words you've saved while reading.
+                </Dialog.Description>
+                <div className="vocabulary-content">
+                  {vocabulary.length === 0 ? (
+                    <div className="vocabulary-empty">
+                      No words saved yet. Click the heart icon on word translations to add them here.
+                    </div>
+                  ) : (
+                    <ScrollArea.Root className="vocabulary-scroll">
+                      <ScrollArea.Viewport className="vocabulary-list">
+                        {vocabulary.map((entry) => (
+                          <div key={entry.word} className="vocabulary-item">
+                            <div className="vocabulary-item-header">
+                              <span className="vocabulary-word">{entry.word}</span>
+                              {entry.phonetic && (
+                                <span className="vocabulary-phonetic">{entry.phonetic}</span>
+                              )}
+                            </div>
+                            <div className="vocabulary-definitions">
+                              {entry.definitions.map((def, idx) => (
+                                <div key={idx} className="vocabulary-definition">
+                                  {def.pos && <span className="vocabulary-pos">{def.pos}</span>}
+                                  <span className="vocabulary-meanings">{def.meanings}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </ScrollArea.Viewport>
+                      <ScrollArea.Scrollbar orientation="vertical" className="scrollbar">
+                        <ScrollArea.Thumb className="scrollbar-thumb" />
+                      </ScrollArea.Scrollbar>
+                    </ScrollArea.Root>
+                  )}
+                </div>
+                <div className="vocabulary-actions">
+                  <button
+                    className="btn"
+                    onClick={handleExportVocabulary}
+                    disabled={vocabulary.length === 0}
+                  >
+                    Export Markdown
+                  </button>
+                  <Dialog.Close asChild>
+                    <button className="btn btn-primary">Done</button>
+                  </Dialog.Close>
+                </div>
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
           <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
             <Dialog.Trigger asChild>
               <Toolbar.Button className="btn btn-primary">Settings</Toolbar.Button>
@@ -683,7 +849,7 @@ export default function App() {
               pages={pages}
               pageSizes={pageSizes}
               scale={scale}
-              highlightSid={highlightSid}
+              highlightPid={highlightPid}
               onCurrentPageChange={setCurrentPage}
               scrollToPage={scrollToPage}
             />
@@ -698,18 +864,15 @@ export default function App() {
               {pdfDoc ? (
               <TranslationPane
                 pages={pages}
-                activeSid={activeSid}
-                hoverSid={hoverSid}
-                onHoverSid={setHoverSid}
-                onActiveSid={setActiveSid}
-                onTranslateSid={handleTranslateSid}
-                onTranslateWord={handleTranslateWord}
+                activePid={activePid}
+                hoverPid={hoverPid}
+                onHoverPid={setHoverPid}
+                onTranslatePid={handleTranslatePid}
+                onLocatePid={handleLocatePid}
+                onTranslateText={handleTranslateText}
                 wordTranslation={wordTranslation}
                 onClearWordTranslation={handleClearWordTranslation}
-                onSelectPage={(page) => {
-                  setCurrentPage(page);
-                  setScrollToPage(page);
-                }}
+                onToggleLikeWord={handleToggleLikeWord}
               />
               ) : (
                 <div className="empty-state">Translations will appear here.</div>

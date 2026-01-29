@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { TextLayerBuilder } from "pdfjs-dist/web/pdf_viewer.mjs";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import type { Sentence } from "../types";
+import type { Paragraph } from "../types";
 
 const TEXT_LAYER_CLASS = "pdf-text-layer";
 
@@ -11,8 +11,8 @@ type PdfPageProps = {
   scale: number;
   baseWidth: number;
   baseHeight: number;
-  sentences: Sentence[];
-  highlightSid?: string | null;
+  paragraphs: Paragraph[];
+  highlightPid?: string | null;
 };
 
 export function PdfPage({
@@ -21,8 +21,8 @@ export function PdfPage({
   scale,
   baseWidth,
   baseHeight,
-  sentences,
-  highlightSid,
+  paragraphs,
+  highlightPid,
 }: PdfPageProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
@@ -67,8 +67,8 @@ export function PdfPage({
     };
   }, [pdfDoc, pageNumber, scale]);
 
-  const highlightRects = highlightSid
-    ? sentences.filter((sentence) => sentence.sid === highlightSid).flatMap((sentence) => sentence.rects)
+  const highlightRects = highlightPid
+    ? paragraphs.filter((p) => p.pid === highlightPid).flatMap((p) => p.rects)
     : [];
 
   return (

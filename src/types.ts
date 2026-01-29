@@ -6,8 +6,8 @@ export type Rect = {
   h: number;
 };
 
-export type Sentence = {
-  sid: string;
+export type Paragraph = {
+  pid: string;
   page: number;
   source: string;
   translation?: string;
@@ -17,7 +17,8 @@ export type Sentence = {
 
 export type PageDoc = {
   page: number;
-  sentences: Sentence[];
+  paragraphs: Paragraph[];
+  watermarks?: string[];
 };
 
 export type TargetLanguage = {
@@ -39,8 +40,23 @@ export type TranslationSettings = {
   theme: ThemeMode;
 };
 
+export type WordDefinition = {
+  pos: string; // part of speech: n., v., adj., etc.
+  meanings: string;
+};
+
 export type WordTranslation = {
   word: string;
-  translation: string;
+  phonetic?: string;
+  definitions: WordDefinition[];
   position: { x: number; y: number };
+  isLoading?: boolean;
+  isLiked?: boolean;
+};
+
+export type VocabularyEntry = {
+  word: string;
+  phonetic?: string;
+  definitions: WordDefinition[];
+  added_at: string;
 };

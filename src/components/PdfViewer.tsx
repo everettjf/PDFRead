@@ -9,7 +9,7 @@ type PdfViewerProps = {
   pages: PageDoc[];
   pageSizes: { width: number; height: number }[];
   scale: number;
-  highlightSid?: string | null;
+  highlightPid?: string | null;
   onCurrentPageChange: (page: number) => void;
   scrollToPage?: number | null;
 };
@@ -19,7 +19,7 @@ export function PdfViewer({
   pages,
   pageSizes,
   scale,
-  highlightSid,
+  highlightPid,
   onCurrentPageChange,
   scrollToPage,
 }: PdfViewerProps) {
@@ -92,8 +92,8 @@ export function PdfViewer({
                 scale={scale}
                 baseWidth={size.width}
                 baseHeight={size.height}
-                sentences={pageDoc?.sentences ?? []}
-                highlightSid={highlightSid}
+                paragraphs={pageDoc?.paragraphs ?? []}
+                highlightPid={highlightPid}
               />
             </div>
           );

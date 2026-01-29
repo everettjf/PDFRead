@@ -1,5 +1,5 @@
 import type { PDFPageProxy } from "pdfjs-dist";
-import type { Sentence } from "../types";
+import type { Paragraph } from "../types";
 import { hashString } from "./hash";
 
 export type GlyphItem = {
@@ -11,6 +11,7 @@ export type GlyphItem = {
   lineId: number;
   isVertical: boolean;
   columnIndex: number;
+  rotation: number;
 };
 
 type Line = {
@@ -19,7 +20,7 @@ type Line = {
   items: GlyphItem[];
 };
 
-type Paragraph = {
+type TextBlock = {
   items: GlyphItem[];
 };
 
@@ -47,11 +48,52 @@ function normalizeTextItems(page: PDFPageProxy, scale: number): Promise<GlyphIte
       const top = y - h;
       const isVertical = Math.abs(b) + Math.abs(c) > Math.abs(a) + Math.abs(d);
 
-      items.push({ text, x, y: top, w, h, lineId: -1, isVertical, columnIndex: 0 });
+      // Calculate rotation angle from transform matrix
+      const rotation = Math.atan2(b, a) * (180 / Math.PI);
+
+      items.push({ text, x, y: top, w, h, lineId: -1, isVertical, columnIndex: 0, rotation });
     }
 
     return items;
   });
+}
+
+// Common watermark patterns to filter out
+const WATERMARK_PATTERNS = [
+  /^(educational|sample|draft|confidential|watermark|preview|demo)$/i,
+  /^(educational\s*sample|sample\s*copy|not\s*for\s*distribution)$/i,
+];
+
+function isWatermarkText(item: GlyphItem): boolean {
+  // Check if text matches common watermark patterns
+  const text = item.text.toLowerCase();
+  for (const pattern of WATERMARK_PATTERNS) {
+    if (pattern.test(text)) return true;
+  }
+
+  // Check if text is significantly rotated (watermarks are often diagonal)
+  const absRotation = Math.abs(item.rotation);
+  if (absRotation > 10 && absRotation < 170) {
+    // Rotated text that's not horizontal
+    return true;
+  }
+
+  return false;
+}
+
+function filterWatermarks(items: GlyphItem[]): { content: GlyphItem[]; watermarks: GlyphItem[] } {
+  const content: GlyphItem[] = [];
+  const watermarks: GlyphItem[] = [];
+
+  for (const item of items) {
+    if (isWatermarkText(item)) {
+      watermarks.push(item);
+    } else {
+      content.push(item);
+    }
+  }
+
+  return { content, watermarks };
 }
 
 function detectColumnBoundaries(items: GlyphItem[], pageWidth: number): number[] {
@@ -244,49 +286,132 @@ function groupIntoVerticalColumns(items: GlyphItem[]): Line[] {
   return columns.sort((a, b) => b.y - a.y);
 }
 
-function groupIntoParagraphsHorizontal(lines: Line[]): Paragraph[] {
+function getLineText(line: Line): string {
+  const sorted = [...line.items].sort((a, b) => a.x - b.x);
+  return sorted.map((item) => item.text).join(" ");
+}
+
+function groupIntoParagraphsHorizontal(lines: Line[]): TextBlock[] {
   if (lines.length === 0) return [];
+
+  // Calculate average line height
   const avgHeight =
     lines.reduce((sum, line) => sum + line.items.reduce((h, item) => h + item.h, 0) / line.items.length, 0) /
     lines.length;
-  const gapThreshold = Math.max(6, avgHeight * 1.6);
 
-  const paragraphs: Paragraph[] = [];
-  let current: Paragraph = { items: [] };
+  // Get the leftmost X position of each line
+  const lineStarts = lines.map((line) => {
+    const sorted = [...line.items].sort((a, b) => a.x - b.x);
+    return sorted[0]?.x ?? 0;
+  });
+
+  // Get line widths (rightmost - leftmost)
+  const lineWidths = lines.map((line) => {
+    if (line.items.length === 0) return 0;
+    const sorted = [...line.items].sort((a, b) => a.x - b.x);
+    const left = sorted[0].x;
+    const right = sorted[sorted.length - 1].x + sorted[sorted.length - 1].w;
+    return right - left;
+  });
+
+  // Find the most common left margin (baseline for non-indented lines)
+  const sortedStarts = [...lineStarts].sort((a, b) => a - b);
+  const baselineX = sortedStarts[Math.floor(sortedStarts.length * 0.15)] ?? 0; // Use 15th percentile (more aggressive)
+
+  // Calculate average line width to detect short lines
+  const avgWidth = lineWidths.reduce((sum, w) => sum + w, 0) / lineWidths.length;
+
+  // Indentation threshold - if a line starts significantly to the right of baseline, it's indented
+  const indentThreshold = avgHeight * 0.8; // Reduced from 1.5 to be more sensitive
+
+  // Vertical gap thresholds
+  const normalGapThreshold = avgHeight * 1.5; // Moderate gap
+  const largeGapThreshold = avgHeight * 2.0; // Large gap (reduced from 2.5)
+
+  const blocks: TextBlock[] = [];
+  let current: TextBlock = { items: [] };
   let previousY = lines[0].y;
+  let previousLineText = "";
+  let previousLineWidth = 0;
 
-  for (const line of lines) {
-    const gap = line.y - previousY;
-    if (current.items.length > 0 && gap > gapThreshold) {
-      paragraphs.push(current);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineStart = lineStarts[i];
+    const lineWidth = lineWidths[i];
+    const lineText = getLineText(line);
+    const verticalGap = line.y - previousY;
+
+    // Check various conditions for a new paragraph
+    let isNewParagraph = false;
+
+    if (current.items.length > 0) {
+      // 1. Line is indented (starts significantly to the right of baseline)
+      const isIndented = lineStart > baselineX + indentThreshold;
+
+      // 2. Large vertical gap between lines
+      const hasLargeGap = verticalGap > largeGapThreshold;
+
+      // 3. Moderate gap + previous line ended with sentence-ending punctuation
+      const hasMediumGap = verticalGap > normalGapThreshold;
+      const prevEndsSentence = /[.!?]["'"']?\s*$/.test(previousLineText);
+
+      // 4. Line starts with quotation mark (dialogue)
+      const startsWithQuote = /^["'"'「『]/.test(lineText.trim());
+
+      // 5. Previous line was significantly shorter (might be end of paragraph)
+      const prevWasShort = previousLineWidth < avgWidth * 0.7;
+
+      // 6. Line starts with capital letter after previous ended with punctuation
+      const startsWithCapital = /^[A-Z]/.test(lineText.trim());
+
+      // Determine if this is a new paragraph
+      if (isIndented) {
+        isNewParagraph = true;
+      } else if (hasLargeGap) {
+        isNewParagraph = true;
+      } else if (hasMediumGap && prevEndsSentence) {
+        isNewParagraph = true;
+      } else if (startsWithQuote && prevEndsSentence) {
+        isNewParagraph = true;
+      } else if (prevWasShort && prevEndsSentence && (startsWithQuote || startsWithCapital)) {
+        isNewParagraph = true;
+      }
+    }
+
+    if (isNewParagraph) {
+      blocks.push(current);
       current = { items: [] };
     }
+
     current.items.push(...line.items);
     previousY = line.y;
-  }
-  if (current.items.length > 0) {
-    paragraphs.push(current);
+    previousLineText = lineText;
+    previousLineWidth = lineWidth;
   }
 
-  return paragraphs;
+  if (current.items.length > 0) {
+    blocks.push(current);
+  }
+
+  return blocks;
 }
 
-function groupIntoParagraphsVertical(columns: Line[]): Paragraph[] {
+function groupIntoParagraphsVertical(columns: Line[]): TextBlock[] {
   if (columns.length === 0) return [];
   const avgHeight =
     columns.reduce((sum, col) => sum + col.items.reduce((h, item) => h + item.h, 0) / col.items.length, 0) /
     columns.length;
   const gapThreshold = Math.max(6, avgHeight * 1.6);
 
-  const paragraphs: Paragraph[] = [];
-  let current: Paragraph = { items: [] };
+  const blocks: TextBlock[] = [];
+  let current: TextBlock = { items: [] };
 
   for (const column of columns) {
     let previousY = column.items.length > 0 ? column.items[0].y : 0;
     for (const item of column.items) {
       const gap = item.y - previousY;
       if (current.items.length > 0 && gap > gapThreshold) {
-        paragraphs.push(current);
+        blocks.push(current);
         current = { items: [] };
       }
       current.items.push(item);
@@ -295,59 +420,26 @@ function groupIntoParagraphsVertical(columns: Line[]): Paragraph[] {
   }
 
   if (current.items.length > 0) {
-    paragraphs.push(current);
+    blocks.push(current);
   }
 
-  return paragraphs;
+  return blocks;
 }
 
-function splitIntoSentences(text: string, ranges: { item: GlyphItem; start: number; end: number }[]): { text: string; items: GlyphItem[] }[] {
-  const sentenceRegex = /[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/g;
-  const results: { text: string; items: GlyphItem[] }[] = [];
-  let match: RegExpExecArray | null;
+function buildParagraphText(block: TextBlock): { text: string; items: GlyphItem[] } {
+  let text = "";
 
-  while ((match = sentenceRegex.exec(text)) !== null) {
-    const raw = match[0];
-    const start = match.index;
-    const end = match.index + raw.length;
-    const trimmed = raw.trim();
-    if (!trimmed) continue;
-
-    const items = ranges
-      .filter((range) => range.end > start && range.start < end)
-      .map((range) => range.item);
-
-    if (items.length > 0) {
-      results.push({ text: trimmed, items });
+  for (const item of block.items) {
+    if (text.length > 0 && !text.endsWith(" ")) {
+      text += " ";
     }
+    text += item.text;
   }
 
-  return results;
+  return { text: text.trim(), items: block.items };
 }
 
-function mergeParagraphsIntoSentences(paragraphs: Paragraph[]): { text: string; items: GlyphItem[] }[] {
-  if (paragraphs.length === 0) return [];
-
-  // First, build full text and ranges from all paragraphs
-  const allRanges: { item: GlyphItem; start: number; end: number }[] = [];
-  let fullText = "";
-
-  for (const paragraph of paragraphs) {
-    for (const item of paragraph.items) {
-      if (fullText.length > 0 && !fullText.endsWith(" ")) {
-        fullText += " ";
-      }
-      const start = fullText.length;
-      fullText += item.text;
-      allRanges.push({ item, start, end: fullText.length });
-    }
-  }
-
-  // Split into sentences using the full text
-  return splitIntoSentences(fullText, allRanges);
-}
-
-function buildSentenceRects(page: number, items: GlyphItem[]): { page: number; x: number; y: number; w: number; h: number }[] {
+function buildParagraphRects(page: number, items: GlyphItem[]): { page: number; x: number; y: number; w: number; h: number }[] {
   const grouped = new Map<number, GlyphItem[]>();
   for (const item of items) {
     if (!grouped.has(item.lineId)) {
@@ -373,16 +465,27 @@ function buildSentenceRects(page: number, items: GlyphItem[]): { page: number; x
   return rects;
 }
 
-export async function extractPageSentences(
+export type PageExtractionResult = {
+  paragraphs: Paragraph[];
+  watermarks: string[];
+};
+
+export async function extractPageParagraphs(
   page: PDFPageProxy,
   docId: string,
   pageIndex: number
-): Promise<Sentence[]> {
+): Promise<PageExtractionResult> {
   const viewport = page.getViewport({ scale: 1 });
   const pageWidth = viewport.width;
 
-  const glyphs = await normalizeTextItems(page, 1);
+  const allGlyphs = await normalizeTextItems(page, 1);
+
+  // Filter out watermarks
+  const { content: glyphs, watermarks: watermarkItems } = filterWatermarks(allGlyphs);
+  const watermarks = watermarkItems.map((item) => item.text);
+
   const mode = detectWritingMode(glyphs);
+  const paragraphs: Paragraph[] = [];
 
   // For horizontal text, detect and handle multi-column layout
   if (mode === "horizontal") {
@@ -394,55 +497,51 @@ export async function extractPageSentences(
       assignColumnsToItems(glyphs, columnBoundaries);
       const columnGroups = groupItemsByColumn(glyphs, numColumns);
 
-      const sentences: Sentence[] = [];
-
       // Process each column separately, left to right
       for (const columnItems of columnGroups) {
         if (columnItems.length === 0) continue;
 
         const lines = groupIntoHorizontalLines(columnItems);
-        const paragraphs = groupIntoParagraphsHorizontal(lines);
+        const internalParagraphs = groupIntoParagraphsHorizontal(lines);
 
-        // Merge all paragraphs into complete sentences
-        const sentenceParts = mergeParagraphsIntoSentences(paragraphs);
-        for (const part of sentenceParts) {
-          const source = part.text;
-          const hash = hashString(source);
-          const sid = `${docId}:p${pageIndex + 1}:${hash}`;
-          sentences.push({
-            sid,
+        for (const para of internalParagraphs) {
+          const { text, items } = buildParagraphText(para);
+          if (!text) continue;
+
+          const hash = hashString(text);
+          const pid = `${docId}:p${pageIndex + 1}:${hash}`;
+          paragraphs.push({
+            pid,
             page: pageIndex + 1,
-            source,
+            source: text,
             status: "idle",
-            rects: buildSentenceRects(pageIndex + 1, part.items),
+            rects: buildParagraphRects(pageIndex + 1, items),
           });
         }
       }
 
-      return sentences;
+      return { paragraphs, watermarks };
     }
   }
 
-  // Single column or vertical layout - use original logic
+  // Single column or vertical layout
   const lines = mode === "vertical" ? groupIntoVerticalColumns(glyphs) : groupIntoHorizontalLines(glyphs);
-  const paragraphs = mode === "vertical" ? groupIntoParagraphsVertical(lines) : groupIntoParagraphsHorizontal(lines);
+  const internalParagraphs = mode === "vertical" ? groupIntoParagraphsVertical(lines) : groupIntoParagraphsHorizontal(lines);
 
-  // Merge all paragraphs into complete sentences
-  const sentenceParts = mergeParagraphsIntoSentences(paragraphs);
-  const sentences: Sentence[] = [];
+  for (const para of internalParagraphs) {
+    const { text, items } = buildParagraphText(para);
+    if (!text) continue;
 
-  for (const part of sentenceParts) {
-    const source = part.text;
-    const hash = hashString(source);
-    const sid = `${docId}:p${pageIndex + 1}:${hash}`;
-    sentences.push({
-      sid,
+    const hash = hashString(text);
+    const pid = `${docId}:p${pageIndex + 1}:${hash}`;
+    paragraphs.push({
+      pid,
       page: pageIndex + 1,
-      source,
+      source: text,
       status: "idle",
-      rects: buildSentenceRects(pageIndex + 1, part.items),
+      rects: buildParagraphRects(pageIndex + 1, items),
     });
   }
 
-  return sentences;
+  return { paragraphs, watermarks };
 }

@@ -3,27 +3,27 @@ import { Virtuoso } from "react-virtuoso";
 import { createEditor } from "slate";
 import { Slate, Editable, withReact } from "slate-react";
 import * as Popover from "@radix-ui/react-popover";
-import type { PageDoc, Sentence, WordTranslation } from "../types";
+import type { PageDoc, Paragraph, WordTranslation } from "../types";
 
 type TranslationPaneProps = {
   pages: PageDoc[];
-  activeSid?: string | null;
-  hoverSid?: string | null;
-  onHoverSid: (sid: string | null) => void;
-  onActiveSid: (sid: string | null) => void;
-  onTranslateSid: (sid: string) => void;
-  onTranslateWord: (word: string, position: { x: number; y: number }) => void;
+  activePid?: string | null;
+  hoverPid?: string | null;
+  onHoverPid: (pid: string | null) => void;
+  onTranslatePid: (pid: string) => void;
+  onLocatePid: (pid: string, page: number) => void;
+  onTranslateText: (text: string, position: { x: number; y: number }) => void;
   wordTranslation: WordTranslation | null;
   onClearWordTranslation: () => void;
-  onSelectPage: (page: number) => void;
+  onToggleLikeWord: (word: WordTranslation) => void;
 };
 
-type SentenceElement = {
-  type: "sentence";
-  sid: string;
+type ParagraphElement = {
+  type: "paragraph";
+  pid: string;
   source: string;
   translation?: string;
-  status: Sentence["status"];
+  status: Paragraph["status"];
   children: { text: string }[];
 };
 
@@ -40,63 +40,78 @@ function TranslateIcon() {
   );
 }
 
+function LocateIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2v4" />
+      <path d="M12 18v4" />
+      <path d="M2 12h4" />
+      <path d="M18 12h4" />
+    </svg>
+  );
+}
+
+function HeartIcon({ filled }: { filled?: boolean }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+    </svg>
+  );
+}
+
 function PageTranslation({
   page,
-  activeSid,
-  hoverSid,
-  onHoverSid,
-  onActiveSid,
-  onTranslateSid,
-  onTranslateWord,
-  wordTranslation,
-  onClearWordTranslation,
-  onSelectPage,
+  activePid,
+  hoverPid,
+  onHoverPid,
+  onTranslatePid,
+  onLocatePid,
+  onTranslateText,
 }: {
   page: PageDoc;
-  activeSid?: string | null;
-  hoverSid?: string | null;
-  onHoverSid: (sid: string | null) => void;
-  onActiveSid: (sid: string | null) => void;
-  onTranslateSid: (sid: string) => void;
-  onTranslateWord: (word: string, position: { x: number; y: number }) => void;
-  wordTranslation: WordTranslation | null;
-  onClearWordTranslation: () => void;
-  onSelectPage: (page: number) => void;
+  activePid?: string | null;
+  hoverPid?: string | null;
+  onHoverPid: (pid: string | null) => void;
+  onTranslatePid: (pid: string) => void;
+  onLocatePid: (pid: string, page: number) => void;
+  onTranslateText: (text: string, position: { x: number; y: number }) => void;
 }) {
   const editor = useMemo(() => withReact(createEditor()), []);
   const value = useMemo(
     () =>
-      page.sentences.map<SentenceElement>((sentence) => ({
-        type: "sentence",
-        sid: sentence.sid,
-        source: sentence.source,
-        translation: sentence.translation,
-        status: sentence.status,
+      page.paragraphs.map<ParagraphElement>((para) => ({
+        type: "paragraph",
+        pid: para.pid,
+        source: para.source,
+        translation: para.translation,
+        status: para.status,
         children: [{ text: "" }],
       })),
-    [page.sentences]
+    [page.paragraphs]
   );
   const slateKey = useMemo(
     () =>
-      `${page.page}:${page.sentences
-        .map((sentence) => `${sentence.sid}:${sentence.status}:${sentence.translation ?? ""}`)
+      `${page.page}:${page.paragraphs
+        .map((para) => `${para.pid}:${para.status}:${para.translation ?? ""}`)
         .join("|")}`,
-    [page.page, page.sentences]
+    [page.page, page.paragraphs]
   );
 
-  const handleWordClick = useCallback(
+  const handleTextInteraction = useCallback(
     (e: React.MouseEvent) => {
-      // Don't trigger word translation if user is selecting text
+      // Check if there's a text selection
       const selection = window.getSelection();
       if (selection && selection.toString().trim().length > 0) {
+        // User has selected text - don't do anything on click
+        // The selection will be handled by mouseup
         return;
       }
 
-      // Get the word at click position
+      // Single word click - get the word at click position
       const range = document.caretRangeFromPoint(e.clientX, e.clientY);
       if (!range) return;
 
-      // Expand to word boundaries
       const node = range.startContainer;
       if (node.nodeType !== Node.TEXT_NODE) return;
 
@@ -116,10 +131,25 @@ function PageTranslation({
 
       if (word && /^[a-zA-Z]+$/.test(word) && word.length > 1) {
         e.stopPropagation();
-        onTranslateWord(word, { x: e.clientX, y: e.clientY });
+        onTranslateText(word, { x: e.clientX, y: e.clientY });
       }
     },
-    [onTranslateWord]
+    [onTranslateText]
+  );
+
+  const handleMouseUp = useCallback(
+    (e: React.MouseEvent) => {
+      // Check if there's a text selection
+      const selection = window.getSelection();
+      const selectedText = selection?.toString().trim();
+
+      if (selectedText && selectedText.length > 0 && selectedText.length < 200) {
+        // User has selected text - show translation
+        e.stopPropagation();
+        onTranslateText(selectedText, { x: e.clientX, y: e.clientY });
+      }
+    },
+    [onTranslateText]
   );
 
   return (
@@ -129,40 +159,52 @@ function PageTranslation({
         <Editable
           readOnly
           renderElement={({ attributes, element, children }) => {
-            const sentence = element as SentenceElement;
-            const isActive = sentence.sid === activeSid || sentence.sid === hoverSid;
+            const para = element as ParagraphElement;
+            const isActive = para.pid === activePid || para.pid === hoverPid;
             const translationText =
-              sentence.status === "loading"
+              para.status === "loading"
                 ? "Translating..."
-                : sentence.status === "error"
+                : para.status === "error"
                 ? "Translation failed."
-                : sentence.translation || "";
+                : para.translation || "";
             return (
               <div
                 {...attributes}
-                className={`sentence-block ${isActive ? "is-active" : ""}`}
-                onMouseEnter={() => onHoverSid(sentence.sid)}
-                onMouseLeave={() => onHoverSid(null)}
-                onClick={() => {
-                  onActiveSid(sentence.sid === activeSid ? null : sentence.sid);
-                  onSelectPage(page.page);
-                }}
+                className={`paragraph-block ${isActive ? "is-active" : ""}`}
+                onMouseEnter={() => onHoverPid(para.pid)}
+                onMouseLeave={() => onHoverPid(null)}
               >
-                <button
-                  className="translate-btn"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onTranslateSid(sentence.sid);
-                  }}
-                  title="Translate sentence"
+                <div className="paragraph-actions">
+                  <button
+                    className="action-btn locate-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onLocatePid(para.pid, page.page);
+                    }}
+                    title="Locate in PDF"
+                  >
+                    <LocateIcon />
+                  </button>
+                  <button
+                    className="action-btn translate-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTranslatePid(para.pid);
+                    }}
+                    title="Translate paragraph"
+                  >
+                    <TranslateIcon />
+                  </button>
+                </div>
+                <div
+                  className="paragraph-source"
+                  onClick={handleTextInteraction}
+                  onMouseUp={handleMouseUp}
                 >
-                  <TranslateIcon />
-                </button>
-                <div className="sentence-source" onClick={handleWordClick}>
-                  {sentence.source}
+                  {para.source}
                 </div>
                 {translationText && (
-                  <div className="sentence-translation">{translationText}</div>
+                  <div className="paragraph-translation">{translationText}</div>
                 )}
                 {children}
               </div>
@@ -170,6 +212,39 @@ function PageTranslation({
           }}
         />
       </Slate>
+    </div>
+  );
+}
+
+export function TranslationPane({
+  pages,
+  activePid,
+  hoverPid,
+  onHoverPid,
+  onTranslatePid,
+  onLocatePid,
+  onTranslateText,
+  wordTranslation,
+  onClearWordTranslation,
+  onToggleLikeWord,
+}: TranslationPaneProps) {
+  return (
+    <div className="translation-pane">
+      <Virtuoso
+        style={{ height: "100%" }}
+        totalCount={pages.length}
+        itemContent={(index) => (
+          <PageTranslation
+            page={pages[index]}
+            activePid={activePid}
+            hoverPid={hoverPid}
+            onHoverPid={onHoverPid}
+            onTranslatePid={onTranslatePid}
+            onLocatePid={onLocatePid}
+            onTranslateText={onTranslateText}
+          />
+        )}
+      />
       {wordTranslation && (
         <Popover.Root open={true} onOpenChange={(open) => !open && onClearWordTranslation()}>
           <Popover.Anchor
@@ -186,51 +261,39 @@ function PageTranslation({
               onPointerDownOutside={() => onClearWordTranslation()}
               onEscapeKeyDown={() => onClearWordTranslation()}
             >
-              <div className="word-popover-word">{wordTranslation.word}</div>
-              <div className="word-popover-translation">
-                {wordTranslation.translation || "Translating..."}
+              <div className="word-popover-header">
+                <div className="word-popover-word">{wordTranslation.word}</div>
+                <button
+                  className={`word-like-btn ${wordTranslation.isLiked ? "is-liked" : ""}`}
+                  onClick={() => onToggleLikeWord(wordTranslation)}
+                  title={wordTranslation.isLiked ? "Remove from vocabulary" : "Add to vocabulary"}
+                >
+                  <HeartIcon filled={wordTranslation.isLiked} />
+                </button>
               </div>
+              {wordTranslation.phonetic && (
+                <div className="word-popover-phonetic">
+                  <span className="phonetic-label">UK</span>
+                  <span className="phonetic-text">{wordTranslation.phonetic}</span>
+                </div>
+              )}
+              {wordTranslation.isLoading ? (
+                <div className="word-popover-loading">Looking up...</div>
+              ) : (
+                <div className="word-popover-definitions">
+                  {wordTranslation.definitions.map((def, index) => (
+                    <div key={index} className="word-definition">
+                      {def.pos && <span className="word-pos">{def.pos}</span>}
+                      <span className="word-meanings">{def.meanings}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <Popover.Arrow className="word-popover-arrow" />
             </Popover.Content>
           </Popover.Portal>
         </Popover.Root>
       )}
-    </div>
-  );
-}
-
-export function TranslationPane({
-  pages,
-  activeSid,
-  hoverSid,
-  onHoverSid,
-  onActiveSid,
-  onTranslateSid,
-  onTranslateWord,
-  wordTranslation,
-  onClearWordTranslation,
-  onSelectPage,
-}: TranslationPaneProps) {
-  return (
-    <div className="translation-pane">
-      <Virtuoso
-        style={{ height: "100%" }}
-        totalCount={pages.length}
-        itemContent={(index) => (
-          <PageTranslation
-            page={pages[index]}
-            activeSid={activeSid}
-            hoverSid={hoverSid}
-            onHoverSid={onHoverSid}
-            onActiveSid={onActiveSid}
-            onTranslateSid={onTranslateSid}
-            onTranslateWord={onTranslateWord}
-            wordTranslation={wordTranslation}
-            onClearWordTranslation={onClearWordTranslation}
-            onSelectPage={onSelectPage}
-          />
-        )}
-      />
     </div>
   );
 }

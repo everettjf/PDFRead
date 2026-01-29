@@ -3,6 +3,7 @@ use tauri::Manager;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use chrono::{DateTime, Utc};
 
 #[derive(Debug, Deserialize)]
 struct TargetLanguage {
@@ -63,6 +64,41 @@ fn cache_file_path(handle: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 fn openrouter_key_path(handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(app_config_dir(handle)?.join("openrouter_key.txt"))
+}
+
+fn vocabulary_file_path(handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app_config_dir(handle)?.join("vocabulary.json"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VocabularyEntry {
+    word: String,
+    phonetic: Option<String>,
+    definitions: Vec<WordDefinitionResult>,
+    added_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct VocabularyData {
+    entries: Vec<VocabularyEntry>,
+}
+
+fn load_vocabulary(handle: &tauri::AppHandle) -> Result<VocabularyData, String> {
+    let path = vocabulary_file_path(handle)?;
+    if !path.exists() {
+        return Ok(VocabularyData { entries: Vec::new() });
+    }
+    let data = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&data).map_err(|e| e.to_string())
+}
+
+fn save_vocabulary(handle: &tauri::AppHandle, vocab: &VocabularyData) -> Result<(), String> {
+    let path = vocabulary_file_path(handle)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let data = serde_json::to_string_pretty(vocab).map_err(|e| e.to_string())?;
+    fs::write(path, data).map_err(|e| e.to_string())
 }
 
 fn load_cache(handle: &tauri::AppHandle) -> Result<CachedTranslations, String> {
@@ -148,6 +184,41 @@ fn build_system_prompt() -> String {
         "No markdown, no explanations, no extra text.",
     ]
     .join(" ")
+}
+
+fn build_word_lookup_system_prompt() -> String {
+    [
+        "You are a dictionary lookup engine.",
+        "Provide word definitions in dictionary format.",
+        "Output STRICT JSON ONLY.",
+        "No markdown, no explanations, no extra text.",
+    ]
+    .join(" ")
+}
+
+fn build_word_lookup_prompt(word: &str, target_language: &TargetLanguage) -> String {
+    format!(
+        r#"Look up the word "{}" and provide its definition in {} ({}).
+Return JSON in this exact format:
+{{"phonetic": "/phonetic transcription/", "definitions": [{{"pos": "n.", "meanings": "meaning1; meaning2"}}, {{"pos": "v.", "meanings": "meaning1; meaning2"}}]}}
+- phonetic: IPA pronunciation
+- definitions: array of objects with pos (part of speech like n., v., adj., adv., etc.) and meanings (translations separated by semicolons)
+- Only include parts of speech that apply to this word
+- Meanings should be in {}"#,
+        word, target_language.label, target_language.code, target_language.label
+    )
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WordLookupResult {
+    phonetic: Option<String>,
+    definitions: Vec<WordDefinitionResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WordDefinitionResult {
+    pos: String,
+    meanings: String,
 }
 
 fn build_user_prompt(target_language: &TargetLanguage, sentences: &[TranslateSentence]) -> String {
@@ -374,6 +445,142 @@ async fn openrouter_translate(
     Ok(output)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+async fn openrouter_word_lookup(
+    handle: tauri::AppHandle,
+    model: String,
+    target_language: TargetLanguage,
+    word: String,
+) -> Result<WordLookupResult, String> {
+    let api_key = load_openrouter_key(&handle)?;
+    let system_prompt = build_word_lookup_system_prompt();
+    let user_prompt = build_word_lookup_prompt(&word, &target_language);
+
+    let content = request_openrouter(&api_key, &model, 0.0, &system_prompt, &user_prompt).await?;
+
+    // Try to extract JSON from the response
+    let json_content = extract_json_object(&content);
+
+    let result: WordLookupResult = serde_json::from_str(&json_content)
+        .map_err(|e| format!("Failed to parse word lookup JSON: {} (content: {})", e, truncate_for_error(&json_content)))?;
+
+    Ok(result)
+}
+
+#[derive(Debug, Deserialize)]
+struct AddVocabularyRequest {
+    word: String,
+    phonetic: Option<String>,
+    definitions: Vec<WordDefinitionResult>,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn add_vocabulary_word(
+    handle: tauri::AppHandle,
+    word: String,
+    phonetic: Option<String>,
+    definitions: Vec<WordDefinitionResult>,
+) -> Result<(), String> {
+    let mut vocab = load_vocabulary(&handle)?;
+
+    // Check if word already exists (case-insensitive)
+    let word_lower = word.to_lowercase();
+    if vocab.entries.iter().any(|e| e.word.to_lowercase() == word_lower) {
+        return Ok(()); // Already exists, don't add duplicate
+    }
+
+    vocab.entries.push(VocabularyEntry {
+        word,
+        phonetic,
+        definitions,
+        added_at: Utc::now(),
+    });
+
+    save_vocabulary(&handle, &vocab)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn remove_vocabulary_word(handle: tauri::AppHandle, word: String) -> Result<(), String> {
+    let mut vocab = load_vocabulary(&handle)?;
+    let word_lower = word.to_lowercase();
+    vocab.entries.retain(|e| e.word.to_lowercase() != word_lower);
+    save_vocabulary(&handle, &vocab)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_vocabulary(handle: tauri::AppHandle) -> Result<Vec<VocabularyEntry>, String> {
+    let vocab = load_vocabulary(&handle)?;
+    Ok(vocab.entries)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn is_word_in_vocabulary(handle: tauri::AppHandle, word: String) -> Result<bool, String> {
+    let vocab = load_vocabulary(&handle)?;
+    let word_lower = word.to_lowercase();
+    Ok(vocab.entries.iter().any(|e| e.word.to_lowercase() == word_lower))
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn export_vocabulary_markdown(handle: tauri::AppHandle) -> Result<String, String> {
+    let vocab = load_vocabulary(&handle)?;
+
+    let mut markdown = String::from("# My Vocabulary\n\n");
+    markdown.push_str(&format!("Total words: {}\n\n", vocab.entries.len()));
+    markdown.push_str("---\n\n");
+
+    for entry in vocab.entries {
+        markdown.push_str(&format!("## {}\n\n", entry.word));
+
+        if let Some(phonetic) = &entry.phonetic {
+            markdown.push_str(&format!("**Pronunciation:** {}\n\n", phonetic));
+        }
+
+        for def in &entry.definitions {
+            if def.pos.is_empty() {
+                markdown.push_str(&format!("- {}\n", def.meanings));
+            } else {
+                markdown.push_str(&format!("- **{}** {}\n", def.pos, def.meanings));
+            }
+        }
+
+        markdown.push_str(&format!("\n*Added: {}*\n\n", entry.added_at.format("%Y-%m-%d %H:%M")));
+        markdown.push_str("---\n\n");
+    }
+
+    Ok(markdown)
+}
+
+fn extract_json_object(content: &str) -> String {
+    let trimmed = content.trim();
+
+    // If it starts with {, it's already JSON
+    if trimmed.starts_with('{') {
+        return trimmed.to_string();
+    }
+
+    // Try to extract from markdown code block
+    if let Some(start) = trimmed.find("```json") {
+        if let Some(end) = trimmed[start..].find("```\n").or_else(|| trimmed[start..].rfind("```")) {
+            let json_start = start + 7;
+            let json_end = start + end;
+            if json_start < json_end {
+                return trimmed[json_start..json_end].trim().to_string();
+            }
+        }
+    }
+
+    // Try to find JSON object in the content
+    if let Some(start) = trimmed.find('{') {
+        if let Some(end) = trimmed.rfind('}') {
+            if start < end {
+                return trimmed[start..=end].to_string();
+            }
+        }
+    }
+
+    trimmed.to_string()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -382,9 +589,15 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_pdf_file,
             openrouter_translate,
+            openrouter_word_lookup,
             save_openrouter_key,
             get_openrouter_key_info,
-            test_openrouter_key
+            test_openrouter_key,
+            add_vocabulary_word,
+            remove_vocabulary_word,
+            get_vocabulary,
+            is_word_in_vocabulary,
+            export_vocabulary_markdown
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
