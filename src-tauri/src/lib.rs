@@ -88,6 +88,50 @@ fn load_openrouter_key(handle: &tauri::AppHandle) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+#[derive(Debug, Serialize)]
+struct KeyInfo {
+    exists: bool,
+}
+
+#[tauri::command]
+fn get_openrouter_key_info(handle: tauri::AppHandle) -> Result<KeyInfo, String> {
+    let exists = load_openrouter_key(&handle).is_ok();
+    Ok(KeyInfo { exists })
+}
+
+#[tauri::command]
+fn save_openrouter_key(handle: tauri::AppHandle, key: String) -> Result<(), String> {
+    let trimmed = key.trim();
+    if trimmed.is_empty() {
+        return Err("OpenRouter API key is empty.".to_string());
+    }
+    let path = openrouter_key_path(&handle)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(path, trimmed).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn test_openrouter_key(handle: tauri::AppHandle) -> Result<(), String> {
+    let api_key = load_openrouter_key(&handle)?;
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://openrouter.ai/api/v1/models")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        Err(format!("OpenRouter error: {} {}", status, text))
+    }
+}
+
 fn build_system_prompt() -> String {
     [
         "You are a translation engine.",
@@ -258,7 +302,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![read_pdf_file, openrouter_translate])
+        .invoke_handler(tauri::generate_handler![
+            read_pdf_file,
+            openrouter_translate,
+            save_openrouter_key,
+            get_openrouter_key_info,
+            test_openrouter_key
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

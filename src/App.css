@@ -92,6 +92,24 @@ body {
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-title-icon {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.app-title-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .status-text {
@@ -101,11 +119,19 @@ body {
 
 .app-main {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.85fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   position: relative;
   z-index: 1;
+}
+
+.app-main.is-pdf-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-main.is-translation-only {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .pane {
@@ -288,6 +314,7 @@ body {
   padding: 12px;
   width: min(320px, 70vw);
   box-shadow: var(--shadow);
+  z-index: 1002;
 }
 
 .popover-title {
@@ -305,10 +332,19 @@ body {
 .popover-list {
   display: grid;
   gap: 6px;
+  padding: 4px;
 }
 
 .popover-scroll {
-  max-height: 220px;
+  height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-muted);
+  padding: 4px;
+}
+
+.popover-scroll [data-radix-scroll-area-viewport] {
+  height: 100%;
 }
 
 .scrollbar {
@@ -327,7 +363,7 @@ body {
   border: 1px solid transparent;
   border-radius: 10px;
   padding: 8px 10px;
-  background: var(--panel-muted);
+  background: var(--panel);
   color: var(--ink);
   font-weight: 600;
   display: flex;
@@ -369,6 +405,7 @@ body {
 .popover-arrow {
   fill: var(--panel);
   stroke: var(--border);
+  z-index: 1002;
 }
 
 .dialog-overlay {
@@ -376,6 +413,7 @@ body {
   inset: 0;
   background: rgba(15, 14, 12, 0.35);
   backdrop-filter: blur(4px);
+  z-index: 1000;
 }
 
 .dialog-content {
@@ -386,9 +424,10 @@ body {
   background: var(--panel);
   border-radius: 16px;
   padding: 24px;
-  width: min(520px, 90vw);
+  width: min(460px, 88vw);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
+  z-index: 1001;
 }
 
 .dialog-title {
@@ -397,11 +436,31 @@ body {
   margin-bottom: 16px;
 }
 
+.dialog-description {
+  font-size: 12px;
+  color: var(--ink-muted);
+  margin: -6px 0 14px;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px 16px;
+  gap: 10px 14px;
   margin-bottom: 18px;
+}
+
+.settings-key {
+  grid-column: span 2;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px 10px;
+  align-items: center;
+}
+
+.settings-status {
+  grid-column: span 2;
+  font-size: 12px;
+  color: var(--ink-muted);
 }
 
 .settings-label {

@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "pdfread",
+        "title": "PDFRead",
         "width": 1400,
         "height": 850
       }

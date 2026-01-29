@@ -10,6 +10,7 @@ type TranslationPaneProps = {
   hoverSid?: string | null;
   onHoverSid: (sid: string | null) => void;
   onActiveSid: (sid: string | null) => void;
+  onSelectPage: (page: number) => void;
 };
 
 type SentenceElement = {
@@ -27,12 +28,14 @@ function PageTranslation({
   hoverSid,
   onHoverSid,
   onActiveSid,
+  onSelectPage,
 }: {
   page: PageDoc;
   activeSid?: string | null;
   hoverSid?: string | null;
   onHoverSid: (sid: string | null) => void;
   onActiveSid: (sid: string | null) => void;
+  onSelectPage: (page: number) => void;
 }) {
   const editor = useMemo(() => withReact(createEditor()), []);
   const value = useMemo(
@@ -76,7 +79,10 @@ function PageTranslation({
                 className={`sentence-block ${isActive ? "is-active" : ""}`}
                 onMouseEnter={() => onHoverSid(sentence.sid)}
                 onMouseLeave={() => onHoverSid(null)}
-                onClick={() => onActiveSid(sentence.sid === activeSid ? null : sentence.sid)}
+                onClick={() => {
+                  onActiveSid(sentence.sid === activeSid ? null : sentence.sid);
+                  onSelectPage(page.page);
+                }}
               >
                 <div className="sentence-source">{sentence.source}</div>
                 <div className="sentence-translation">{translationText}</div>
@@ -96,6 +102,7 @@ export function TranslationPane({
   hoverSid,
   onHoverSid,
   onActiveSid,
+  onSelectPage,
 }: TranslationPaneProps) {
   return (
     <div className="translation-pane">
@@ -109,6 +116,7 @@ export function TranslationPane({
             hoverSid={hoverSid}
             onHoverSid={onHoverSid}
             onActiveSid={onActiveSid}
+            onSelectPage={onSelectPage}
           />
         )}
       />

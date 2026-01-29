@@ -1,5 +1,5 @@
-import { useMemo, useRef } from "react";
-import { Virtuoso } from "react-virtuoso";
+import { useEffect, useMemo, useRef } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import type { PageDoc } from "../types";
 import { PdfPage } from "./PdfPage";
@@ -11,6 +11,7 @@ type PdfViewerProps = {
   scale: number;
   highlightSid?: string | null;
   onCurrentPageChange: (page: number) => void;
+  scrollToPage?: number | null;
 };
 
 export function PdfViewer({
@@ -20,8 +21,10 @@ export function PdfViewer({
   scale,
   highlightSid,
   onCurrentPageChange,
+  scrollToPage,
 }: PdfViewerProps) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
 
   const heights = useMemo(
     () => pageSizes.map((size) => size.height * scale + 32),
@@ -37,6 +40,12 @@ export function PdfViewer({
     }
     return offsets;
   }, [heights]);
+
+  useEffect(() => {
+    if (!scrollToPage) return;
+    const index = Math.max(0, Math.min(heights.length - 1, scrollToPage - 1));
+    virtuosoRef.current?.scrollToIndex({ index, align: "center", behavior: "smooth" });
+  }, [scrollToPage, heights.length]);
 
   function handleScroll() {
     const container = scrollerRef.current;
@@ -65,6 +74,9 @@ export function PdfViewer({
       <Virtuoso
         style={{ height: "100%" }}
         totalCount={pages.length}
+        ref={(instance) => {
+          virtuosoRef.current = instance;
+        }}
         scrollerRef={(element) => {
           scrollerRef.current = element as HTMLDivElement | null;
         }}

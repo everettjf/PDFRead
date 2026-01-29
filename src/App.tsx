@@ -23,7 +23,7 @@ pdfjsLib.GlobalWorkerOptions.workerPort = new pdfjsWorker();
 const DEFAULT_SETTINGS: TranslationSettings = {
   targetLanguage: { label: "Chinese (Simplified)", code: "zh-CN" },
   model: "openai/gpt-4o-mini",
-  temperature: 0.2,
+  temperature: 0,
   mode: "window",
   radius: 2,
   chunkSize: 10,
@@ -53,8 +53,16 @@ export default function App() {
   const [hoverSid, setHoverSid] = useState<string | null>(null);
   const [activeSid, setActiveSid] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("Open a PDF to get started.");
+  const [viewMode, setViewMode] = useState<"split" | "pdf" | "translation">("split");
   const [languageOpen, setLanguageOpen] = useState(false);
   const [languageQuery, setLanguageQuery] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [apiKeyInput, setApiKeyInput] = useState<string>("");
+  const [apiKeyStatus, setApiKeyStatus] = useState<string>("");
+  const [apiKeySaving, setApiKeySaving] = useState<boolean>(false);
+  const [apiKeyExists, setApiKeyExists] = useState<boolean>(false);
+  const [apiKeyTesting, setApiKeyTesting] = useState<boolean>(false);
+  const [scrollToPage, setScrollToPage] = useState<number | null>(null);
 
   const translationRequestId = useRef(0);
   const translatingRef = useRef(false);
@@ -86,6 +94,14 @@ export default function App() {
 
     return undefined;
   }, [settings.theme]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    setApiKeyStatus("");
+    invoke<{ exists: boolean }>("get_openrouter_key_info")
+      .then((info) => setApiKeyExists(info.exists))
+      .catch(() => setApiKeyExists(false));
+  }, [settingsOpen]);
 
   const handleOpenPdf = useCallback(async () => {
     const selection = await open({
@@ -152,7 +168,6 @@ export default function App() {
     if (!docId || translateWindowPages.length === 0) return;
 
     window.clearTimeout(debounceRef.current);
-    const requestId = ++translationRequestId.current;
 
     debounceRef.current = window.setTimeout(async () => {
       if (translatingRef.current) return;
@@ -164,6 +179,8 @@ export default function App() {
       if (pending.length === 0) return;
 
       translatingRef.current = true;
+      const requestId = ++translationRequestId.current;
+
       setPages((prev) =>
         prev.map((page) => ({
           ...page,
@@ -177,14 +194,38 @@ export default function App() {
 
       try {
         const payload = pending.map((sentence) => ({ sid: sentence.sid, text: sentence.source }));
-        const results = (await invoke("openrouter_translate", {
-          model: settings.model,
-          temperature: settings.temperature,
-          targetLanguage: settings.targetLanguage,
-          sentences: payload,
-        })) as { sid: string; translation: string }[];
+        const invokeWithTimeout = <T,>(promise: Promise<T>, timeoutMs: number) => {
+          let timeoutId: number | undefined;
+          const timeoutPromise = new Promise<T>((_, reject) => {
+            timeoutId = window.setTimeout(() => reject(new Error("Translation timed out.")), timeoutMs);
+          });
+          return Promise.race([promise, timeoutPromise]).finally(() => {
+            if (timeoutId) window.clearTimeout(timeoutId);
+          });
+        };
+        const results = (await invokeWithTimeout(
+          invoke("openrouter_translate", {
+            model: settings.model,
+            temperature: settings.temperature,
+            targetLanguage: settings.targetLanguage,
+            sentences: payload,
+          }) as Promise<{ sid: string; translation: string }[]>,
+          30000
+        )) as { sid: string; translation: string }[];
 
-        if (translationRequestId.current !== requestId) return;
+        if (translationRequestId.current !== requestId) {
+          setPages((prev) =>
+            prev.map((page) => ({
+              ...page,
+              sentences: page.sentences.map((sentence) =>
+                pending.some((item) => item.sid === sentence.sid) && sentence.status === "loading"
+                  ? { ...sentence, status: "idle" }
+                  : sentence
+              ),
+            }))
+          );
+          return;
+        }
 
         const translationMap = new Map(results.map((item) => [item.sid, item.translation]));
         setPages((prev) =>
@@ -201,19 +242,21 @@ export default function App() {
           }))
         );
       } catch (error) {
-        if (translationRequestId.current === requestId) {
-          setPages((prev) =>
-            prev.map((page) => ({
-              ...page,
-              sentences: page.sentences.map((sentence) =>
-                pending.some((item) => item.sid === sentence.sid)
-                  ? { ...sentence, status: "error" }
-                  : sentence
-              ),
-            }))
-          );
-        }
-        setStatusMessage(`Translation error: ${String(error)}`);
+        setPages((prev) =>
+          prev.map((page) => ({
+            ...page,
+            sentences: page.sentences.map((sentence) =>
+              pending.some((item) => item.sid === sentence.sid)
+                ? { ...sentence, status: "error" }
+                : sentence
+            ),
+          }))
+        );
+        const errorText = String(error);
+        const friendlyMessage = errorText.includes("openrouter_key.txt")
+          ? "OpenRouter API key is not configured."
+          : `Translation error: ${errorText}`;
+        setStatusMessage(friendlyMessage);
       } finally {
         translatingRef.current = false;
       }
@@ -263,7 +306,27 @@ export default function App() {
     <div className="app-shell">
       <Toolbar.Root className="app-header" aria-label="Toolbar">
         <div className="header-left">
-          <div className="app-title">PDF Bilingual Reader</div>
+          <div className="app-title">
+            <span className="app-title-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" role="img">
+                <path
+                  d="M6 3.5h8.5L19.5 8v12a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V5A1.5 1.5 0 0 1 6 3.5Z"
+                  fill="currentColor"
+                  opacity="0.18"
+                />
+                <path
+                  d="M6 3.5h8.5L19.5 8v12a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 20V5A1.5 1.5 0 0 1 6 3.5Z"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinejoin="round"
+                />
+                <path d="M14.5 3.5V8H19" fill="none" stroke="currentColor" strokeWidth="1.4" />
+                <path d="M8 12h8M8 15.5h6" fill="none" stroke="currentColor" strokeWidth="1.4" />
+              </svg>
+            </span>
+            PDF Read
+          </div>
           <Toolbar.Button className="btn" onClick={handleOpenPdf}>
             Open PDF
           </Toolbar.Button>
@@ -294,7 +357,23 @@ export default function App() {
               +
             </Toolbar.Button>
           </div>
-          <Dialog.Root>
+          <Select.Root value={viewMode} onValueChange={(value) => setViewMode(value as typeof viewMode)}>
+            <Select.Trigger className="select-trigger" aria-label="View mode">
+              <Select.Value />
+            </Select.Trigger>
+            <Select.Content className="select-content" position="popper">
+              <Select.Item value="split" className="select-item">
+                <Select.ItemText>Default</Select.ItemText>
+              </Select.Item>
+              <Select.Item value="pdf" className="select-item">
+                <Select.ItemText>PDF only</Select.ItemText>
+              </Select.Item>
+              <Select.Item value="translation" className="select-item">
+                <Select.ItemText>Translation only</Select.ItemText>
+              </Select.Item>
+            </Select.Content>
+          </Select.Root>
+          <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
             <Dialog.Trigger asChild>
               <Toolbar.Button className="btn btn-primary">Settings</Toolbar.Button>
             </Dialog.Trigger>
@@ -302,6 +381,9 @@ export default function App() {
               <Dialog.Overlay className="dialog-overlay" />
               <Dialog.Content className="dialog-content">
                 <Dialog.Title className="dialog-title">Settings</Dialog.Title>
+                <Dialog.Description className="dialog-description">
+                  Configure translation preferences and appearance.
+                </Dialog.Description>
                 <div className="settings-grid">
                   <Label.Root className="settings-label" htmlFor="theme-select">
                     Theme
@@ -384,40 +466,6 @@ export default function App() {
                       </Popover.Content>
                     </Popover.Portal>
                   </Popover.Root>
-                  <Label.Root className="settings-label" htmlFor="target-label">
-                    Target Language Label
-                  </Label.Root>
-                  <input
-                    id="target-label"
-                    className="input"
-                    value={settings.targetLanguage.label}
-                    onChange={(event) =>
-                      setSettings((prev) => ({
-                        ...prev,
-                        targetLanguage: {
-                          ...prev.targetLanguage,
-                          label: event.target.value,
-                        },
-                      }))
-                    }
-                  />
-                  <Label.Root className="settings-label" htmlFor="target-code">
-                    Target Language Code
-                  </Label.Root>
-                  <input
-                    id="target-code"
-                    className="input"
-                    value={settings.targetLanguage.code}
-                    onChange={(event) =>
-                      setSettings((prev) => ({
-                        ...prev,
-                        targetLanguage: {
-                          ...prev.targetLanguage,
-                          code: event.target.value,
-                        },
-                      }))
-                    }
-                  />
                   <Label.Root className="settings-label" htmlFor="model-input">
                     Model
                   </Label.Root>
@@ -429,56 +477,74 @@ export default function App() {
                       setSettings((prev) => ({ ...prev, model: event.target.value }))
                     }
                   />
-                  <Label.Root className="settings-label" htmlFor="mode-select">
-                    Mode
+                  <Label.Root className="settings-label" htmlFor="api-key-input">
+                    OpenRouter API Key
                   </Label.Root>
-                  <Select.Root
-                    value={settings.mode}
-                    onValueChange={(value) =>
-                      setSettings((prev) => ({
-                        ...prev,
-                        mode: value as TranslationSettings["mode"],
-                      }))
-                    }
-                  >
-                    <Select.Trigger className="select-trigger" id="mode-select">
-                      <Select.Value />
-                    </Select.Trigger>
-                    <Select.Content className="select-content" position="popper">
-                      <Select.Item value="window" className="select-item">
-                        <Select.ItemText>window</Select.ItemText>
-                      </Select.Item>
-                      <Select.Item value="chunk" className="select-item">
-                        <Select.ItemText>chunk</Select.ItemText>
-                      </Select.Item>
-                    </Select.Content>
-                  </Select.Root>
-                  <Label.Root className="settings-label" htmlFor="radius-input">
-                    Radius (window mode)
-                  </Label.Root>
-                  <input
-                    id="radius-input"
-                    className="input"
-                    type="number"
-                    min={0}
-                    value={settings.radius}
-                    onChange={(event) =>
-                      setSettings((prev) => ({ ...prev, radius: Number(event.target.value) }))
-                    }
-                  />
-                  <Label.Root className="settings-label" htmlFor="chunk-input">
-                    Chunk Size (chunk mode)
-                  </Label.Root>
-                  <input
-                    id="chunk-input"
-                    className="input"
-                    type="number"
-                    min={1}
-                    value={settings.chunkSize}
-                    onChange={(event) =>
-                      setSettings((prev) => ({ ...prev, chunkSize: Number(event.target.value) }))
-                    }
-                  />
+                  <div className="settings-key">
+                    <input
+                      id="api-key-input"
+                      className="input"
+                      type="password"
+                      placeholder="sk-or-..."
+                      value={apiKeyInput}
+                      onChange={(event) => setApiKeyInput(event.target.value)}
+                    />
+                    <button
+                      className="btn"
+                      type="button"
+                      disabled={apiKeySaving}
+                      onClick={async () => {
+                        if (!apiKeyInput.trim()) {
+                          setApiKeyStatus("Please enter an API key.");
+                          return;
+                        }
+                        setApiKeySaving(true);
+                        setApiKeyStatus("");
+                        try {
+                          await invoke("save_openrouter_key", { key: apiKeyInput });
+                          setApiKeyStatus("Saved. Key stored locally.");
+                          setApiKeyInput("");
+                          const info = await invoke<{ exists: boolean }>("get_openrouter_key_info");
+                          setApiKeyExists(info.exists);
+                        } catch (error) {
+                          const message = String(error);
+                          setApiKeyStatus(message ? `Failed to save key: ${message}` : "Failed to save key.");
+                        } finally {
+                          setApiKeySaving(false);
+                        }
+                      }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      className="btn"
+                      type="button"
+                      disabled={apiKeyTesting}
+                      onClick={async () => {
+                        setApiKeyTesting(true);
+                        setApiKeyStatus("");
+                        try {
+                          await invoke("test_openrouter_key");
+                          setApiKeyStatus("Connection OK.");
+                        } catch (error) {
+                          const message = String(error);
+                          setApiKeyStatus(
+                            message ? `Connection failed: ${message}` : "Connection failed."
+                          );
+                        } finally {
+                          setApiKeyTesting(false);
+                        }
+                      }}
+                    >
+                      Test
+                    </button>
+                    {apiKeyExists ? (
+                      <div className="settings-status">Key saved.</div>
+                    ) : (
+                      <div className="settings-status">No key saved yet.</div>
+                    )}
+                    {apiKeyStatus ? <div className="settings-status">{apiKeyStatus}</div> : null}
+                  </div>
                 </div>
                 <Dialog.Close asChild>
                   <button className="btn btn-primary">Done</button>
@@ -488,9 +554,14 @@ export default function App() {
           </Dialog.Root>
         </div>
       </Toolbar.Root>
-      <main className="app-main">
-        <section className="pane pane-left">
-          {pdfDoc ? (
+      <main
+        className={`app-main ${viewMode === "pdf" ? "is-pdf-only" : ""} ${
+          viewMode === "translation" ? "is-translation-only" : ""
+        }`}
+      >
+        {viewMode !== "translation" ? (
+          <section className="pane pane-left">
+            {pdfDoc ? (
             <PdfViewer
               pdfDoc={pdfDoc}
               pages={pages}
@@ -498,27 +569,35 @@ export default function App() {
               scale={scale}
               highlightSid={highlightSid}
               onCurrentPageChange={setCurrentPage}
+              scrollToPage={scrollToPage}
             />
-          ) : (
-            <div className="empty-state">No PDF loaded.</div>
-          )}
-        </section>
-        <section className="pane pane-right">
-          <div className="pane-body">
-            {pdfDoc ? (
-              <TranslationPane
+            ) : (
+              <div className="empty-state">No PDF loaded.</div>
+            )}
+          </section>
+        ) : null}
+        {viewMode !== "pdf" ? (
+          <section className="pane pane-right">
+            <div className="pane-body">
+              {pdfDoc ? (
+                <TranslationPane
                 pages={pages}
                 activeSid={activeSid}
                 hoverSid={hoverSid}
                 onHoverSid={setHoverSid}
                 onActiveSid={setActiveSid}
+                onSelectPage={(page) => {
+                  setCurrentPage(page);
+                  setScrollToPage(page);
+                }}
               />
-            ) : (
-              <div className="empty-state">Translations will appear here.</div>
-            )}
-          </div>
-          <div className="side-footer">OpenRouter translation via Tauri backend.</div>
-        </section>
+              ) : (
+                <div className="empty-state">Translations will appear here.</div>
+              )}
+            </div>
+            <div className="side-footer">OpenRouter translation via Tauri backend.</div>
+          </section>
+        ) : null}
       </main>
     </div>
   );
