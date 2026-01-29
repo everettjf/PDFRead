@@ -57,63 +57,113 @@ function normalizeTextItems(page: PDFPageProxy, scale: number): Promise<GlyphIte
 function detectColumnBoundaries(items: GlyphItem[], pageWidth: number): number[] {
   if (items.length === 0) return [0, pageWidth];
 
-  // Collect all X positions (left edges) of text items
-  const xPositions = items.map((item) => item.x).sort((a, b) => a - b);
+  // Step 1: Group items into approximate lines by Y coordinate
+  const lineThreshold = 10; // Items within 10px Y are on the same line
+  const sortedByY = [...items].sort((a, b) => a.y - b.y);
 
-  // Find gaps in X distribution that could indicate column boundaries
-  const gapThreshold = pageWidth * 0.1; // 10% of page width
-  const minColumnWidth = pageWidth * 0.15; // Minimum column width (15% of page)
+  const lines: GlyphItem[][] = [];
+  let currentLine: GlyphItem[] = [];
+  let currentY = sortedByY[0]?.y ?? 0;
 
-  // Build histogram of X positions to find gaps
-  const bucketSize = pageWidth / 50;
-  const buckets: number[] = new Array(50).fill(0);
-
-  for (const x of xPositions) {
-    const bucketIndex = Math.min(49, Math.floor(x / bucketSize));
-    buckets[bucketIndex]++;
+  for (const item of sortedByY) {
+    if (currentLine.length === 0 || Math.abs(item.y - currentY) <= lineThreshold) {
+      currentLine.push(item);
+      // Update Y as running average
+      currentY = currentLine.reduce((sum, i) => sum + i.y, 0) / currentLine.length;
+    } else {
+      if (currentLine.length > 0) lines.push(currentLine);
+      currentLine = [item];
+      currentY = item.y;
+    }
   }
+  if (currentLine.length > 0) lines.push(currentLine);
 
-  // Find significant gaps (consecutive empty or low-density buckets)
-  const boundaries: number[] = [0];
-  let inGap = false;
-  let gapStart = 0;
+  // Step 2: For each line, find horizontal gaps between items
+  const gaps: { x: number; width: number }[] = [];
+  const minGapWidth = pageWidth * 0.05; // At least 5% of page width to be a column gap
 
-  for (let i = 1; i < buckets.length - 1; i++) {
-    const isLowDensity = buckets[i] < items.length * 0.01; // Less than 1% of items
+  for (const line of lines) {
+    if (line.length < 2) continue;
 
-    if (isLowDensity && !inGap) {
-      inGap = true;
-      gapStart = i;
-    } else if (!isLowDensity && inGap) {
-      inGap = false;
-      const gapWidth = (i - gapStart) * bucketSize;
-      const gapCenter = (gapStart + i) / 2 * bucketSize;
+    // Sort items in line by X position
+    const sortedLine = [...line].sort((a, b) => a.x - b.x);
 
-      // Check if this gap is significant and creates reasonable column widths
-      if (gapWidth >= gapThreshold) {
-        const lastBoundary = boundaries[boundaries.length - 1];
-        if (gapCenter - lastBoundary >= minColumnWidth) {
-          boundaries.push(gapCenter);
-        }
+    for (let i = 0; i < sortedLine.length - 1; i++) {
+      const current = sortedLine[i];
+      const next = sortedLine[i + 1];
+      const gapStart = current.x + current.w;
+      const gapEnd = next.x;
+      const gapWidth = gapEnd - gapStart;
+
+      // Only consider significant gaps (not just word spacing)
+      if (gapWidth > minGapWidth) {
+        gaps.push({ x: (gapStart + gapEnd) / 2, width: gapWidth });
       }
     }
   }
 
-  boundaries.push(pageWidth);
-
-  // Verify we have reasonable columns (at least 2 with decent width)
-  if (boundaries.length === 2) {
-    return boundaries; // Single column layout
+  if (gaps.length === 0) {
+    return [0, pageWidth]; // Single column
   }
 
-  // Filter out columns that are too narrow
+  // Step 3: Cluster gaps by X position to find consistent column boundaries
+  // Use a histogram approach with buckets
+  const bucketSize = pageWidth / 100;
+  const gapHistogram: number[] = new Array(100).fill(0);
+
+  for (const gap of gaps) {
+    const bucketIndex = Math.min(99, Math.max(0, Math.floor(gap.x / bucketSize)));
+    gapHistogram[bucketIndex]++;
+  }
+
+  // Find peaks in the histogram (consistent gap positions across many lines)
+  const minOccurrences = Math.max(3, lines.length * 0.15); // Gap must appear in at least 15% of lines
+  const boundaries: number[] = [0];
+
+  // Find contiguous regions with high gap counts
+  let inPeak = false;
+  let peakMax = 0;
+  let peakMaxIndex = 0;
+
+  for (let i = 0; i < gapHistogram.length; i++) {
+    if (gapHistogram[i] >= minOccurrences) {
+      if (!inPeak) {
+        inPeak = true;
+        peakMax = gapHistogram[i];
+        peakMaxIndex = i;
+      } else if (gapHistogram[i] > peakMax) {
+        peakMax = gapHistogram[i];
+        peakMaxIndex = i;
+      }
+    } else if (inPeak) {
+      // End of peak - add boundary at peak center
+      const boundaryX = (peakMaxIndex + 0.5) * bucketSize;
+      boundaries.push(boundaryX);
+      inPeak = false;
+    }
+  }
+
+  // Handle peak at the end
+  if (inPeak) {
+    const boundaryX = (peakMaxIndex + 0.5) * bucketSize;
+    boundaries.push(boundaryX);
+  }
+
+  boundaries.push(pageWidth);
+
+  // Validate: columns should be at least 20% of page width
+  const minColumnWidth = pageWidth * 0.2;
   const validBoundaries: number[] = [0];
+
   for (let i = 1; i < boundaries.length; i++) {
     const columnWidth = boundaries[i] - validBoundaries[validBoundaries.length - 1];
     if (columnWidth >= minColumnWidth || i === boundaries.length - 1) {
-      validBoundaries.push(boundaries[i]);
+      if (i < boundaries.length - 1) {
+        validBoundaries.push(boundaries[i]);
+      }
     }
   }
+  validBoundaries.push(pageWidth);
 
   return validBoundaries;
 }
