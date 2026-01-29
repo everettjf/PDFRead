@@ -14,7 +14,7 @@ import { PdfViewer } from "./components/PdfViewer";
 import { TranslationPane } from "./components/TranslationPane";
 import { extractPageSentences } from "./lib/textExtraction";
 import { hashBuffer } from "./lib/hash";
-import type { PageDoc, TranslationSettings } from "./types";
+import type { PageDoc, TranslationSettings, WordTranslation } from "./types";
 import "./App.css";
 
 pdfjsLib.GlobalWorkerOptions.workerPort = new pdfjsWorker();
@@ -63,12 +63,30 @@ export default function App() {
   const [apiKeyExists, setApiKeyExists] = useState<boolean>(false);
   const [apiKeyTesting, setApiKeyTesting] = useState<boolean>(false);
   const [scrollToPage, setScrollToPage] = useState<number | null>(null);
+  const [wordTranslation, setWordTranslation] = useState<WordTranslation | null>(null);
 
+  const pagesRef = useRef<PageDoc[]>([]);
+  const wordTranslationCacheRef = useRef<Map<string, string>>(new Map());
+  const settingsRef = useRef(settings);
+  const docIdRef = useRef(docId);
   const translationRequestId = useRef(0);
   const translatingRef = useRef(false);
   const debounceRef = useRef<number | undefined>(undefined);
+  const translateQueueRef = useRef<string[]>([]);
 
   const highlightSid = hoverSid ?? activeSid;
+
+  useEffect(() => {
+    pagesRef.current = pages;
+  }, [pages]);
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
+
+  useEffect(() => {
+    docIdRef.current = docId;
+  }, [docId]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -115,6 +133,10 @@ export default function App() {
     setPdfDoc(null);
     setPages([]);
     setPageSizes([]);
+    translationRequestId.current = 0;
+    translatingRef.current = false;
+    translateQueueRef.current = [];
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
 
     const rawBytes = (await invoke("read_pdf_file", { path: selection })) as number[];
     const bytes = new Uint8Array(rawBytes);
@@ -148,124 +170,174 @@ export default function App() {
         prev.map((entry) => (entry.page === i ? { ...entry, sentences } : entry))
       );
     }
-    setStatusMessage("Ready.");
+    setStatusMessage("Ready. Click a sentence to translate.");
   }, []);
+  const runTranslateQueue = useCallback(async () => {
+    if (translatingRef.current) return;
+    if (!docIdRef.current) return;
 
-  const translateWindowPages = useMemo(() => {
-    if (!pages.length) return [];
-    if (settings.mode === "chunk") {
-      const chunkIndex = Math.floor((currentPage - 1) / settings.chunkSize);
-      const start = chunkIndex * settings.chunkSize + 1;
-      const end = Math.min(pages.length, start + settings.chunkSize - 1);
-      return pages.filter((page) => page.page >= start && page.page <= end);
-    }
-    const start = Math.max(1, currentPage - settings.radius);
-    const end = Math.min(pages.length, currentPage + settings.radius);
-    return pages.filter((page) => page.page >= start && page.page <= end);
-  }, [currentPage, pages, settings.chunkSize, settings.mode, settings.radius]);
+    const uniqueQueue = Array.from(new Set(translateQueueRef.current));
+    translateQueueRef.current = [];
+    if (uniqueQueue.length === 0) return;
 
-  useEffect(() => {
-    if (!docId || translateWindowPages.length === 0) return;
+    const pending = pagesRef.current
+      .flatMap((page) => page.sentences)
+      .filter(
+        (sentence) =>
+          uniqueQueue.includes(sentence.sid) &&
+          (sentence.status === "idle" || sentence.status === "error")
+      );
 
-    window.clearTimeout(debounceRef.current);
+    if (pending.length === 0) return;
 
-    debounceRef.current = window.setTimeout(async () => {
-      if (translatingRef.current) return;
+    translatingRef.current = true;
+    const requestId = ++translationRequestId.current;
 
-      const pending = translateWindowPages
-        .flatMap((page) => page.sentences)
-        .filter((sentence) => sentence.status === "idle");
+    setPages((prev) =>
+      prev.map((page) => ({
+        ...page,
+        sentences: page.sentences.map((sentence) =>
+          pending.some((item) => item.sid === sentence.sid)
+            ? { ...sentence, status: "loading" }
+            : sentence
+        ),
+      }))
+    );
 
-      if (pending.length === 0) return;
+    try {
+      const payload = pending.map((sentence) => ({ sid: sentence.sid, text: sentence.source }));
+      const invokeWithTimeout = <T,>(promise: Promise<T>, timeoutMs: number) => {
+        let timeoutId: number | undefined;
+        const timeoutPromise = new Promise<T>((_, reject) => {
+          timeoutId = window.setTimeout(() => reject(new Error("Translation timed out.")), timeoutMs);
+        });
+        return Promise.race([promise, timeoutPromise]).finally(() => {
+          if (timeoutId) window.clearTimeout(timeoutId);
+        });
+      };
+      const currentSettings = settingsRef.current;
+      const results = (await invokeWithTimeout(
+        invoke("openrouter_translate", {
+          model: currentSettings.model,
+          temperature: currentSettings.temperature,
+          targetLanguage: currentSettings.targetLanguage,
+          sentences: payload,
+        }) as Promise<{ sid: string; translation: string }[]>,
+        30000
+      )) as { sid: string; translation: string }[];
 
-      translatingRef.current = true;
-      const requestId = ++translationRequestId.current;
+      if (translationRequestId.current !== requestId) {
+        setPages((prev) =>
+          prev.map((page) => ({
+            ...page,
+            sentences: page.sentences.map((sentence) =>
+              pending.some((item) => item.sid === sentence.sid) && sentence.status === "loading"
+                ? { ...sentence, status: "idle" }
+                : sentence
+            ),
+          }))
+        );
+        return;
+      }
 
+      const translationMap = new Map(results.map((item) => [item.sid, item.translation]));
+      setPages((prev) =>
+        prev.map((page) => ({
+          ...page,
+          sentences: page.sentences.map((sentence) => {
+            if (!pending.some((item) => item.sid === sentence.sid)) return sentence;
+            const translation = translationMap.get(sentence.sid);
+            if (!translation) {
+              return { ...sentence, status: "error" };
+            }
+            return { ...sentence, translation, status: "done" };
+          }),
+        }))
+      );
+    } catch (error) {
       setPages((prev) =>
         prev.map((page) => ({
           ...page,
           sentences: page.sentences.map((sentence) =>
             pending.some((item) => item.sid === sentence.sid)
-              ? { ...sentence, status: "loading" }
+              ? { ...sentence, status: "error" }
               : sentence
           ),
         }))
       );
+      const errorText = String(error);
+      const friendlyMessage = errorText.includes("openrouter_key.txt")
+        ? "OpenRouter API key is not configured."
+        : `Translation error: ${errorText}`;
+      setStatusMessage(friendlyMessage);
+    } finally {
+      translatingRef.current = false;
+      if (translateQueueRef.current.length > 0) {
+        window.clearTimeout(debounceRef.current);
+        debounceRef.current = window.setTimeout(() => {
+          void runTranslateQueue();
+        }, 0);
+      }
+    }
+  }, []);
+
+  const handleTranslateSid = useCallback(
+    (sid: string) => {
+      if (!docIdRef.current) return;
+      const sentence = pagesRef.current
+        .flatMap((page) => page.sentences)
+        .find((item) => item.sid === sid);
+      if (!sentence) return;
+      if (sentence.status === "done" || sentence.status === "loading") return;
+
+      translateQueueRef.current = Array.from(new Set([...translateQueueRef.current, sid]));
+      window.clearTimeout(debounceRef.current);
+      debounceRef.current = window.setTimeout(() => {
+        void runTranslateQueue();
+      }, 400);
+    },
+    [runTranslateQueue]
+  );
+
+  const handleTranslateWord = useCallback(
+    async (word: string, position: { x: number; y: number }) => {
+      const normalizedWord = word.toLowerCase();
+
+      // Check cache first
+      const cached = wordTranslationCacheRef.current.get(normalizedWord);
+      if (cached) {
+        setWordTranslation({ word, translation: cached, position });
+        return;
+      }
+
+      // Show loading state
+      setWordTranslation({ word, translation: "", position });
 
       try {
-        const payload = pending.map((sentence) => ({ sid: sentence.sid, text: sentence.source }));
-        const invokeWithTimeout = <T,>(promise: Promise<T>, timeoutMs: number) => {
-          let timeoutId: number | undefined;
-          const timeoutPromise = new Promise<T>((_, reject) => {
-            timeoutId = window.setTimeout(() => reject(new Error("Translation timed out.")), timeoutMs);
-          });
-          return Promise.race([promise, timeoutPromise]).finally(() => {
-            if (timeoutId) window.clearTimeout(timeoutId);
-          });
-        };
-        const results = (await invokeWithTimeout(
-          invoke("openrouter_translate", {
-            model: settings.model,
-            temperature: settings.temperature,
-            targetLanguage: settings.targetLanguage,
-            sentences: payload,
-          }) as Promise<{ sid: string; translation: string }[]>,
-          30000
-        )) as { sid: string; translation: string }[];
+        const currentSettings = settingsRef.current;
+        const results = (await invoke("openrouter_translate", {
+          model: currentSettings.model,
+          temperature: currentSettings.temperature,
+          targetLanguage: currentSettings.targetLanguage,
+          sentences: [{ sid: "word", text: word }],
+        })) as { sid: string; translation: string }[];
 
-        if (translationRequestId.current !== requestId) {
-          setPages((prev) =>
-            prev.map((page) => ({
-              ...page,
-              sentences: page.sentences.map((sentence) =>
-                pending.some((item) => item.sid === sentence.sid) && sentence.status === "loading"
-                  ? { ...sentence, status: "idle" }
-                  : sentence
-              ),
-            }))
-          );
-          return;
-        }
+        const translation = results[0]?.translation || "Translation failed";
 
-        const translationMap = new Map(results.map((item) => [item.sid, item.translation]));
-        setPages((prev) =>
-          prev.map((page) => ({
-            ...page,
-            sentences: page.sentences.map((sentence) => {
-              if (!pending.some((item) => item.sid === sentence.sid)) return sentence;
-              const translation = translationMap.get(sentence.sid);
-              if (!translation) {
-                return { ...sentence, status: "error" };
-              }
-              return { ...sentence, translation, status: "done" };
-            }),
-          }))
-        );
+        // Cache the result
+        wordTranslationCacheRef.current.set(normalizedWord, translation);
+
+        setWordTranslation({ word, translation, position });
       } catch (error) {
-        setPages((prev) =>
-          prev.map((page) => ({
-            ...page,
-            sentences: page.sentences.map((sentence) =>
-              pending.some((item) => item.sid === sentence.sid)
-                ? { ...sentence, status: "error" }
-                : sentence
-            ),
-          }))
-        );
-        const errorText = String(error);
-        const friendlyMessage = errorText.includes("openrouter_key.txt")
-          ? "OpenRouter API key is not configured."
-          : `Translation error: ${errorText}`;
-        setStatusMessage(friendlyMessage);
-      } finally {
-        translatingRef.current = false;
+        setWordTranslation({ word, translation: "Translation failed", position });
       }
-    }, 400);
+    },
+    []
+  );
 
-    return () => {
-      window.clearTimeout(debounceRef.current);
-    };
-  }, [docId, settings, translateWindowPages]);
+  const handleClearWordTranslation = useCallback(() => {
+    setWordTranslation(null);
+  }, []);
 
   const handleZoomChange = (nextScale: number) => {
     setScale(nextScale);
@@ -379,171 +451,215 @@ export default function App() {
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="dialog-overlay" />
-              <Dialog.Content className="dialog-content">
+              <Dialog.Content className="dialog-content dialog-content-settings">
                 <Dialog.Title className="dialog-title">Settings</Dialog.Title>
                 <Dialog.Description className="dialog-description">
                   Configure translation preferences and appearance.
                 </Dialog.Description>
-                <div className="settings-grid">
-                  <Label.Root className="settings-label" htmlFor="theme-select">
-                    Theme
-                  </Label.Root>
-                  <Select.Root
-                    value={settings.theme}
-                    onValueChange={(value) =>
-                      setSettings((prev) => ({
-                        ...prev,
-                        theme: value as TranslationSettings["theme"],
-                      }))
-                    }
-                  >
-                    <Select.Trigger className="select-trigger" id="theme-select">
-                      <Select.Value />
-                    </Select.Trigger>
-                    <Select.Content className="select-content" position="popper">
-                      <Select.Item value="system" className="select-item">
-                        <Select.ItemText>system</Select.ItemText>
-                      </Select.Item>
-                      <Select.Item value="light" className="select-item">
-                        <Select.ItemText>light</Select.ItemText>
-                      </Select.Item>
-                      <Select.Item value="dark" className="select-item">
-                        <Select.ItemText>dark</Select.ItemText>
-                      </Select.Item>
-                    </Select.Content>
-                  </Select.Root>
-                  <Label.Root className="settings-label" htmlFor="target-language">
-                    Target Language
-                  </Label.Root>
-                  <Popover.Root open={languageOpen} onOpenChange={setLanguageOpen}>
-                    <Popover.Trigger asChild>
-                      <button className="select-trigger" type="button" id="target-language">
-                        {languageTriggerLabel}
-                      </button>
-                    </Popover.Trigger>
-                    <Popover.Portal>
-                      <Popover.Content className="popover-content" sideOffset={8}>
-                        <div className="popover-title">Choose or search</div>
+                <div className="settings-content">
+                  {/* Appearance Section */}
+                  <div className="settings-section">
+                    <div className="settings-section-header">
+                      <span className="settings-section-icon">🎨</span>
+                      <span>Appearance</span>
+                    </div>
+                    <div className="settings-item">
+                      <Label.Root className="settings-label" htmlFor="theme-select">
+                        Theme
+                      </Label.Root>
+                      <Select.Root
+                        value={settings.theme}
+                        onValueChange={(value) =>
+                          setSettings((prev) => ({
+                            ...prev,
+                            theme: value as TranslationSettings["theme"],
+                          }))
+                        }
+                      >
+                        <Select.Trigger className="select-trigger" id="theme-select">
+                          <Select.Value />
+                        </Select.Trigger>
+                        <Select.Content className="select-content" position="popper">
+                          <Select.Item value="system" className="select-item">
+                            <Select.ItemText>System</Select.ItemText>
+                          </Select.Item>
+                          <Select.Item value="light" className="select-item">
+                            <Select.ItemText>Light</Select.ItemText>
+                          </Select.Item>
+                          <Select.Item value="dark" className="select-item">
+                            <Select.ItemText>Dark</Select.ItemText>
+                          </Select.Item>
+                        </Select.Content>
+                      </Select.Root>
+                      <span className="settings-hint">Choose your preferred color scheme</span>
+                    </div>
+                  </div>
+
+                  {/* Translation Section */}
+                  <div className="settings-section">
+                    <div className="settings-section-header">
+                      <span className="settings-section-icon">🌐</span>
+                      <span>Translation</span>
+                    </div>
+                    <div className="settings-item">
+                      <Label.Root className="settings-label" htmlFor="target-language">
+                        Target Language
+                      </Label.Root>
+                      <Popover.Root open={languageOpen} onOpenChange={setLanguageOpen}>
+                        <Popover.Trigger asChild>
+                          <button className="select-trigger" type="button" id="target-language">
+                            {languageTriggerLabel}
+                          </button>
+                        </Popover.Trigger>
+                        <Popover.Portal>
+                          <Popover.Content className="popover-content" sideOffset={8}>
+                            <div className="popover-title">Choose or search</div>
+                            <input
+                              className="input popover-input"
+                              placeholder="Search language or code..."
+                              value={languageQuery}
+                              onChange={(event) => setLanguageQuery(event.target.value)}
+                            />
+                            <ScrollArea.Root className="popover-scroll">
+                              <ScrollArea.Viewport className="popover-list">
+                                {filteredLanguages.map((preset) => (
+                                  <button
+                                    key={preset.code}
+                                    className={`popover-item ${
+                                      preset.code === settings.targetLanguage.code ? "is-selected" : ""
+                                    }`}
+                                    type="button"
+                                    onClick={() => {
+                                      setSettings((prev) => ({
+                                        ...prev,
+                                        targetLanguage: { label: preset.label, code: preset.code },
+                                      }));
+                                      setLanguageOpen(false);
+                                    }}
+                                  >
+                                    <span>{preset.label}</span>
+                                    <span className="popover-code">{preset.code}</span>
+                                  </button>
+                                ))}
+                                {filteredLanguages.length === 0 ? (
+                                  <div className="popover-empty">
+                                    No matches. Edit below for custom.
+                                  </div>
+                                ) : null}
+                              </ScrollArea.Viewport>
+                              <ScrollArea.Scrollbar orientation="vertical" className="scrollbar">
+                                <ScrollArea.Thumb className="scrollbar-thumb" />
+                              </ScrollArea.Scrollbar>
+                            </ScrollArea.Root>
+                            <div className="popover-hint">Custom values can be edited below.</div>
+                            <Popover.Arrow className="popover-arrow" />
+                          </Popover.Content>
+                        </Popover.Portal>
+                      </Popover.Root>
+                      <span className="settings-hint">Language for translations</span>
+                    </div>
+                    <div className="settings-item">
+                      <Label.Root className="settings-label" htmlFor="model-input">
+                        Model
+                      </Label.Root>
+                      <input
+                        id="model-input"
+                        className="input"
+                        value={settings.model}
+                        onChange={(event) =>
+                          setSettings((prev) => ({ ...prev, model: event.target.value }))
+                        }
+                      />
+                      <span className="settings-hint">e.g. openai/gpt-4o-mini, anthropic/claude-3-haiku</span>
+                    </div>
+                  </div>
+
+                  {/* API Configuration Section */}
+                  <div className="settings-section">
+                    <div className="settings-section-header">
+                      <span className="settings-section-icon">🔑</span>
+                      <span>API Configuration</span>
+                    </div>
+                    <div className="settings-item">
+                      <Label.Root className="settings-label" htmlFor="api-key-input">
+                        OpenRouter API Key
+                      </Label.Root>
+                      <div className="api-key-row">
                         <input
-                          className="input popover-input"
-                          placeholder="Search language or code..."
-                          value={languageQuery}
-                          onChange={(event) => setLanguageQuery(event.target.value)}
+                          id="api-key-input"
+                          className="input"
+                          type="password"
+                          placeholder="sk-or-..."
+                          value={apiKeyInput}
+                          onChange={(event) => setApiKeyInput(event.target.value)}
                         />
-                        <ScrollArea.Root className="popover-scroll">
-                          <ScrollArea.Viewport className="popover-list">
-                            {filteredLanguages.map((preset) => (
-                              <button
-                                key={preset.code}
-                                className={`popover-item ${
-                                  preset.code === settings.targetLanguage.code ? "is-selected" : ""
-                                }`}
-                                type="button"
-                                onClick={() => {
-                                  setSettings((prev) => ({
-                                    ...prev,
-                                    targetLanguage: { label: preset.label, code: preset.code },
-                                  }));
-                                  setLanguageOpen(false);
-                                }}
-                              >
-                                <span>{preset.label}</span>
-                                <span className="popover-code">{preset.code}</span>
-                              </button>
-                            ))}
-                            {filteredLanguages.length === 0 ? (
-                              <div className="popover-empty">
-                                No matches. Edit below for custom.
-                              </div>
-                            ) : null}
-                          </ScrollArea.Viewport>
-                          <ScrollArea.Scrollbar orientation="vertical" className="scrollbar">
-                            <ScrollArea.Thumb className="scrollbar-thumb" />
-                          </ScrollArea.Scrollbar>
-                        </ScrollArea.Root>
-                        <div className="popover-hint">Custom values can be edited below.</div>
-                        <Popover.Arrow className="popover-arrow" />
-                      </Popover.Content>
-                    </Popover.Portal>
-                  </Popover.Root>
-                  <Label.Root className="settings-label" htmlFor="model-input">
-                    Model
-                  </Label.Root>
-                  <input
-                    id="model-input"
-                    className="input"
-                    value={settings.model}
-                    onChange={(event) =>
-                      setSettings((prev) => ({ ...prev, model: event.target.value }))
-                    }
-                  />
-                  <Label.Root className="settings-label" htmlFor="api-key-input">
-                    OpenRouter API Key
-                  </Label.Root>
-                  <div className="settings-key">
-                    <input
-                      id="api-key-input"
-                      className="input"
-                      type="password"
-                      placeholder="sk-or-..."
-                      value={apiKeyInput}
-                      onChange={(event) => setApiKeyInput(event.target.value)}
-                    />
-                    <button
-                      className="btn"
-                      type="button"
-                      disabled={apiKeySaving}
-                      onClick={async () => {
-                        if (!apiKeyInput.trim()) {
-                          setApiKeyStatus("Please enter an API key.");
-                          return;
-                        }
-                        setApiKeySaving(true);
-                        setApiKeyStatus("");
-                        try {
-                          await invoke("save_openrouter_key", { key: apiKeyInput });
-                          setApiKeyStatus("Saved. Key stored locally.");
-                          setApiKeyInput("");
-                          const info = await invoke<{ exists: boolean }>("get_openrouter_key_info");
-                          setApiKeyExists(info.exists);
-                        } catch (error) {
-                          const message = String(error);
-                          setApiKeyStatus(message ? `Failed to save key: ${message}` : "Failed to save key.");
-                        } finally {
-                          setApiKeySaving(false);
-                        }
-                      }}
-                    >
-                      Save
-                    </button>
-                    <button
-                      className="btn"
-                      type="button"
-                      disabled={apiKeyTesting}
-                      onClick={async () => {
-                        setApiKeyTesting(true);
-                        setApiKeyStatus("");
-                        try {
-                          await invoke("test_openrouter_key");
-                          setApiKeyStatus("Connection OK.");
-                        } catch (error) {
-                          const message = String(error);
-                          setApiKeyStatus(
-                            message ? `Connection failed: ${message}` : "Connection failed."
-                          );
-                        } finally {
-                          setApiKeyTesting(false);
-                        }
-                      }}
-                    >
-                      Test
-                    </button>
-                    {apiKeyExists ? (
-                      <div className="settings-status">Key saved.</div>
-                    ) : (
-                      <div className="settings-status">No key saved yet.</div>
-                    )}
-                    {apiKeyStatus ? <div className="settings-status">{apiKeyStatus}</div> : null}
+                        <button
+                          className="btn"
+                          type="button"
+                          disabled={apiKeySaving}
+                          onClick={async () => {
+                            if (!apiKeyInput.trim()) {
+                              setApiKeyStatus("Please enter an API key.");
+                              return;
+                            }
+                            setApiKeySaving(true);
+                            setApiKeyStatus("");
+                            try {
+                              await invoke("save_openrouter_key", { key: apiKeyInput });
+                              setApiKeyStatus("Saved. Key stored locally.");
+                              setApiKeyInput("");
+                              const info = await invoke<{ exists: boolean }>("get_openrouter_key_info");
+                              setApiKeyExists(info.exists);
+                            } catch (error) {
+                              const message = String(error);
+                              setApiKeyStatus(message ? `Failed to save key: ${message}` : "Failed to save key.");
+                            } finally {
+                              setApiKeySaving(false);
+                            }
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          className="btn"
+                          type="button"
+                          disabled={apiKeyTesting}
+                          onClick={async () => {
+                            setApiKeyTesting(true);
+                            setApiKeyStatus("");
+                            try {
+                              await invoke("test_openrouter_key");
+                              setApiKeyStatus("Connection OK.");
+                            } catch (error) {
+                              const message = String(error);
+                              setApiKeyStatus(
+                                message ? `Connection failed: ${message}` : "Connection failed."
+                              );
+                            } finally {
+                              setApiKeyTesting(false);
+                            }
+                          }}
+                        >
+                          Test
+                        </button>
+                      </div>
+                      <div className="api-key-status">
+                        {apiKeyExists ? (
+                          <span className="status-ok">Key saved</span>
+                        ) : (
+                          <span className="status-warn">No key saved yet</span>
+                        )}
+                        {apiKeyStatus && <span className="status-message">{apiKeyStatus}</span>}
+                      </div>
+                      <a
+                        href="https://openrouter.ai/keys"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="settings-link"
+                      >
+                        Get API Key →
+                      </a>
+                    </div>
                   </div>
                 </div>
                 <Dialog.Close asChild>
@@ -580,12 +696,16 @@ export default function App() {
           <section className="pane pane-right">
             <div className="pane-body">
               {pdfDoc ? (
-                <TranslationPane
+              <TranslationPane
                 pages={pages}
                 activeSid={activeSid}
                 hoverSid={hoverSid}
                 onHoverSid={setHoverSid}
                 onActiveSid={setActiveSid}
+                onTranslateSid={handleTranslateSid}
+                onTranslateWord={handleTranslateWord}
+                wordTranslation={wordTranslation}
+                onClearWordTranslation={handleClearWordTranslation}
                 onSelectPage={(page) => {
                   setCurrentPage(page);
                   setScrollToPage(page);

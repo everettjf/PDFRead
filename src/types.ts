@@ -38,3 +38,9 @@ export type TranslationSettings = {
   chunkSize: number;
   theme: ThemeMode;
 };
+
+export type WordTranslation = {
+  word: string;
+  translation: string;
+  position: { x: number; y: number };
+};

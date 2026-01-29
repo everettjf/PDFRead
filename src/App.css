@@ -215,7 +215,8 @@ body {
 }
 
 .sentence-block {
-  padding: 12px 14px;
+  position: relative;
+  padding: 12px 14px 12px 40px;
   border-radius: 12px;
   border: 1px solid transparent;
   background: var(--panel-muted);
@@ -229,16 +230,85 @@ body {
   background: var(--sentence-active);
 }
 
+.translate-btn {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+.sentence-block:hover .translate-btn {
+  opacity: 1;
+}
+
+.translate-btn:hover {
+  background: var(--accent);
+  color: white;
+}
+
 .sentence-source {
   font-weight: 600;
   margin-bottom: 4px;
   font-size: 14px;
+  cursor: text;
 }
 
 .sentence-translation {
   color: var(--ink-muted);
   line-height: 1.5;
   font-size: 14px;
+}
+
+/* Word translation popover */
+.word-popover {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  box-shadow: var(--shadow);
+  z-index: 1100;
+  max-width: 280px;
+  animation: popoverFadeIn 0.15s ease;
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.word-popover-word {
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 6px;
+  color: var(--accent);
+}
+
+.word-popover-translation {
+  font-size: 14px;
+  color: var(--ink);
+  line-height: 1.4;
+}
+
+.word-popover-arrow {
+  fill: var(--panel);
 }
 
 .empty-state {
@@ -442,6 +512,106 @@ body {
   margin: -6px 0 14px;
 }
 
+.dialog-content-settings {
+  width: min(520px, 90vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.settings-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.settings-section {
+  background: var(--panel-muted);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section-icon {
+  font-size: 16px;
+}
+
+.settings-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.settings-item:last-child {
+  margin-bottom: 0;
+}
+
+.settings-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+
+.api-key-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-key-row .input {
+  flex: 1;
+}
+
+.api-key-status {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.status-ok {
+  color: #22c55e;
+  font-weight: 500;
+}
+
+.status-warn {
+  color: var(--ink-muted);
+}
+
+.status-message {
+  color: var(--ink-muted);
+}
+
+.settings-link {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.settings-link:hover {
+  text-decoration: underline;
+}
+
+/* Legacy grid support (deprecated) */
 .settings-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -460,12 +630,6 @@ body {
 .settings-status {
   grid-column: span 2;
   font-size: 12px;
-  color: var(--ink-muted);
-}
-
-.settings-label {
-  font-size: 12px;
-  font-weight: 600;
   color: var(--ink-muted);
 }
 
