@@ -10,6 +10,7 @@ import * as Popover from "@radix-ui/react-popover";
 import * as Select from "@radix-ui/react-select";
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 import * as Toolbar from "@radix-ui/react-toolbar";
+import * as Tooltip from "@radix-ui/react-tooltip";
 import { PdfViewer } from "./components/PdfViewer";
 import { TranslationPane } from "./components/TranslationPane";
 import { EpubViewer } from "./components/document/EpubViewer";
@@ -757,6 +758,7 @@ export default function App() {
   }
 
   return (
+    <Tooltip.Provider delayDuration={300}>
     <div className="app-shell">
       <Toolbar.Root className="app-header" aria-label="Toolbar">
         <div className="header-left">
@@ -842,15 +844,16 @@ export default function App() {
               </Select.Item>
             </Select.Content>
           </Select.Root>
-          <Toolbar.Button
-            className={`btn ${chatOpen ? "btn-primary" : ""}`}
-            onClick={() => setChatOpen(!chatOpen)}
-          >
-            AI Chat
-          </Toolbar.Button>
           <Dialog.Root open={vocabularyOpen} onOpenChange={setVocabularyOpen}>
             <Dialog.Trigger asChild>
-              <Toolbar.Button className="btn">Vocabulary</Toolbar.Button>
+              <Toolbar.Button className="btn btn-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                  <path d="M8 7h8M8 11h8M8 15h5" />
+                </svg>
+                <span>Vocabulary</span>
+              </Toolbar.Button>
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="dialog-overlay" />
@@ -909,7 +912,13 @@ export default function App() {
           </Dialog.Root>
           <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
             <Dialog.Trigger asChild>
-              <Toolbar.Button className="btn btn-primary">Settings</Toolbar.Button>
+              <Toolbar.Button className="btn btn-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="3" />
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
+                <span>Settings</span>
+              </Toolbar.Button>
             </Dialog.Trigger>
             <Dialog.Portal>
               <Dialog.Overlay className="dialog-overlay" />
@@ -1130,6 +1139,26 @@ export default function App() {
               </Dialog.Content>
             </Dialog.Portal>
           </Dialog.Root>
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <Toolbar.Button
+                className={`btn btn-icon ${chatOpen ? "btn-primary" : ""}`}
+                onClick={() => setChatOpen(!chatOpen)}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  <path d="M8 10h.01M12 10h.01M16 10h.01" />
+                </svg>
+                <span>AI Chat</span>
+              </Toolbar.Button>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content className="tooltip-content" sideOffset={5}>
+                AI Chat (⌘K)
+                <Tooltip.Arrow className="tooltip-arrow" />
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
         </div>
       </Toolbar.Root>
       <main
@@ -1193,5 +1222,6 @@ export default function App() {
         getSurroundingPagesText={getSurroundingPagesText}
       />
     </div>
+    </Tooltip.Provider>
   );
 }

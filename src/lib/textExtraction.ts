@@ -316,17 +316,17 @@ function groupIntoParagraphsHorizontal(lines: Line[]): TextBlock[] {
 
   // Find the most common left margin (baseline for non-indented lines)
   const sortedStarts = [...lineStarts].sort((a, b) => a - b);
-  const baselineX = sortedStarts[Math.floor(sortedStarts.length * 0.15)] ?? 0; // Use 15th percentile (more aggressive)
+  const baselineX = sortedStarts[Math.floor(sortedStarts.length * 0.15)] ?? 0;
 
   // Calculate average line width to detect short lines
   const avgWidth = lineWidths.reduce((sum, w) => sum + w, 0) / lineWidths.length;
 
   // Indentation threshold - if a line starts significantly to the right of baseline, it's indented
-  const indentThreshold = avgHeight * 0.8; // Reduced from 1.5 to be more sensitive
+  const indentThreshold = avgHeight * 1.2;
 
-  // Vertical gap thresholds
-  const normalGapThreshold = avgHeight * 1.5; // Moderate gap
-  const largeGapThreshold = avgHeight * 2.0; // Large gap (reduced from 2.5)
+  // Vertical gap thresholds - increased to be less aggressive
+  const normalGapThreshold = avgHeight * 1.8;
+  const largeGapThreshold = avgHeight * 2.5;
 
   const blocks: TextBlock[] = [];
   let current: TextBlock = { items: [] };
@@ -345,36 +345,49 @@ function groupIntoParagraphsHorizontal(lines: Line[]): TextBlock[] {
     let isNewParagraph = false;
 
     if (current.items.length > 0) {
-      // 1. Line is indented (starts significantly to the right of baseline)
-      const isIndented = lineStart > baselineX + indentThreshold;
-
-      // 2. Large vertical gap between lines
-      const hasLargeGap = verticalGap > largeGapThreshold;
-
-      // 3. Moderate gap + previous line ended with sentence-ending punctuation
-      const hasMediumGap = verticalGap > normalGapThreshold;
+      // Check if this line clearly continues the previous sentence
+      // (previous doesn't end with sentence punctuation AND current starts with lowercase or continues)
       const prevEndsSentence = /[.!?]["'"']?\s*$/.test(previousLineText);
+      const currentStartsLowercase = /^[a-z]/.test(lineText.trim());
+      const currentContinuesSentence = /^(the|a|an|and|or|but|in|on|at|to|for|of|with|that|this|it|is|was|were|are|be|been|being|have|has|had|do|does|did|will|would|could|should|may|might|must|shall)\s/i.test(lineText.trim());
 
-      // 4. Line starts with quotation mark (dialogue)
-      const startsWithQuote = /^["'"'「『]/.test(lineText.trim());
+      // If previous line doesn't end a sentence and current continues, don't split
+      const isContinuation = !prevEndsSentence && (currentStartsLowercase || currentContinuesSentence);
 
-      // 5. Previous line was significantly shorter (might be end of paragraph)
-      const prevWasShort = previousLineWidth < avgWidth * 0.7;
+      if (isContinuation) {
+        // Don't start a new paragraph - this is a continuation
+        isNewParagraph = false;
+      } else {
+        // 1. Line is indented (starts significantly to the right of baseline)
+        const isIndented = lineStart > baselineX + indentThreshold;
 
-      // 6. Line starts with capital letter after previous ended with punctuation
-      const startsWithCapital = /^[A-Z]/.test(lineText.trim());
+        // 2. Very large vertical gap between lines
+        const hasLargeGap = verticalGap > largeGapThreshold;
 
-      // Determine if this is a new paragraph
-      if (isIndented) {
-        isNewParagraph = true;
-      } else if (hasLargeGap) {
-        isNewParagraph = true;
-      } else if (hasMediumGap && prevEndsSentence) {
-        isNewParagraph = true;
-      } else if (startsWithQuote && prevEndsSentence) {
-        isNewParagraph = true;
-      } else if (prevWasShort && prevEndsSentence && (startsWithQuote || startsWithCapital)) {
-        isNewParagraph = true;
+        // 3. Moderate gap + previous line ended with sentence-ending punctuation
+        const hasMediumGap = verticalGap > normalGapThreshold;
+
+        // 4. Line starts with quotation mark (dialogue) after sentence end
+        const startsWithQuote = /^["'"'「『]/.test(lineText.trim());
+
+        // 5. Previous line was significantly shorter AND ended sentence
+        const prevWasShort = previousLineWidth < avgWidth * 0.65;
+
+        // 6. Line starts with capital letter after previous ended with punctuation
+        const startsWithCapital = /^[A-Z]/.test(lineText.trim());
+
+        // Determine if this is a new paragraph - be more conservative
+        if (isIndented && prevEndsSentence) {
+          isNewParagraph = true;
+        } else if (hasLargeGap && prevEndsSentence) {
+          isNewParagraph = true;
+        } else if (hasMediumGap && prevEndsSentence && startsWithCapital) {
+          isNewParagraph = true;
+        } else if (startsWithQuote && prevEndsSentence && hasMediumGap) {
+          isNewParagraph = true;
+        } else if (prevWasShort && prevEndsSentence && startsWithCapital && hasMediumGap) {
+          isNewParagraph = true;
+        }
       }
     }
 
