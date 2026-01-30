@@ -52,6 +52,17 @@ function LocateIcon() {
   );
 }
 
+function RetryIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 2v6h-6" />
+      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+      <path d="M3 22v-6h6" />
+      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+    </svg>
+  );
+}
+
 function HeartIcon({ filled }: { filled?: boolean }) {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -116,8 +127,19 @@ function PageTranslation({
       if (node.nodeType !== Node.TEXT_NODE) return;
 
       const text = node.textContent || "";
-      let start = range.startOffset;
-      let end = range.startOffset;
+      const offset = range.startOffset;
+
+      // Check if we clicked on or right next to a letter
+      // Must have a letter at current position or immediately before it
+      const charAtOffset = text[offset] || "";
+      const charBefore = offset > 0 ? text[offset - 1] : "";
+      if (!/[a-zA-Z]/.test(charAtOffset) && !/[a-zA-Z]/.test(charBefore)) {
+        // Clicked on whitespace or punctuation, not on a word
+        return;
+      }
+
+      let start = offset;
+      let end = offset;
 
       // Find word boundaries
       while (start > 0 && /[a-zA-Z]/.test(text[start - 1])) {
@@ -203,9 +225,24 @@ function PageTranslation({
                 >
                   {para.source}
                 </div>
-                {translationText && (
+                {para.status === "error" ? (
+                  <div className="paragraph-translation paragraph-error">
+                    <span>Translation failed.</span>
+                    <button
+                      className="retry-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onTranslatePid(para.pid);
+                      }}
+                      title="Retry translation"
+                    >
+                      <RetryIcon />
+                      <span>Retry</span>
+                    </button>
+                  </div>
+                ) : translationText ? (
                   <div className="paragraph-translation">{translationText}</div>
-                )}
+                ) : null}
                 {children}
               </div>
             );

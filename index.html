@@ -4,7 +4,21 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>PDF Read</title>
+    <style>
+      /* Prevent white flash on startup */
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #141310;
+      }
+      @media (prefers-color-scheme: light) {
+        html, body, #root {
+          background: #f2efe9;
+        }
+      }
+    </style>
   </head>
 
   <body>

@@ -467,13 +467,6 @@ async fn openrouter_word_lookup(
     Ok(result)
 }
 
-#[derive(Debug, Deserialize)]
-struct AddVocabularyRequest {
-    word: String,
-    phonetic: Option<String>,
-    definitions: Vec<WordDefinitionResult>,
-}
-
 #[tauri::command(rename_all = "camelCase")]
 fn add_vocabulary_word(
     handle: tauri::AppHandle,

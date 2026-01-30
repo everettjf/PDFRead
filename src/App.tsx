@@ -14,6 +14,7 @@ import { PdfViewer } from "./components/PdfViewer";
 import { TranslationPane } from "./components/TranslationPane";
 import { extractPageParagraphs } from "./lib/textExtraction";
 import { hashBuffer } from "./lib/hash";
+import { LRUCache } from "./lib/lruCache";
 import type { PageDoc, TranslationSettings, WordTranslation, WordDefinition, VocabularyEntry } from "./types";
 import "./App.css";
 
@@ -66,9 +67,10 @@ export default function App() {
   const [wordTranslation, setWordTranslation] = useState<WordTranslation | null>(null);
   const [vocabularyOpen, setVocabularyOpen] = useState(false);
   const [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]);
+  const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
 
   const pagesRef = useRef<PageDoc[]>([]);
-  const textTranslationCacheRef = useRef<Map<string, string>>(new Map());
+  const textTranslationCacheRef = useRef(new LRUCache<string, string>(100));
   const settingsRef = useRef(settings);
   const docIdRef = useRef(docId);
   const translationRequestId = useRef(0);
@@ -131,6 +133,7 @@ export default function App() {
 
     if (!selection || Array.isArray(selection)) return;
 
+    setLoadingProgress(0);
     setStatusMessage("Loading PDF...");
     setPdfDoc(null);
     setPages([]);
@@ -140,20 +143,24 @@ export default function App() {
     translateQueueRef.current = [];
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
 
+    setLoadingProgress(5);
     const rawBytes = (await invoke("read_pdf_file", { path: selection })) as number[];
     const bytes = new Uint8Array(rawBytes);
     const buffer = bytes.buffer.slice(0);
     const hash = await hashBuffer(buffer);
     const nextDocId = hash.slice(0, 12);
 
+    setLoadingProgress(15);
     const loadingTask = pdfjsLib.getDocument({ data: bytes });
     const doc = await loadingTask.promise;
 
+    setLoadingProgress(25);
     const sizes: { width: number; height: number }[] = [];
     for (let i = 1; i <= doc.numPages; i += 1) {
       const page = await doc.getPage(i);
       const viewport = page.getViewport({ scale: 1 });
       sizes.push({ width: viewport.width, height: viewport.height });
+      setLoadingProgress(25 + Math.round((i / doc.numPages) * 25));
     }
 
     const initialPages: PageDoc[] = sizes.map((_, index) => ({ page: index + 1, paragraphs: [] }));
@@ -171,7 +178,9 @@ export default function App() {
       setPages((prev) =>
         prev.map((entry) => (entry.page === i ? { ...entry, paragraphs, watermarks } : entry))
       );
+      setLoadingProgress(50 + Math.round((i / doc.numPages) * 50));
     }
+    setLoadingProgress(null);
     setStatusMessage("Ready. Click translate button or select text.");
   }, []);
 
@@ -285,13 +294,15 @@ export default function App() {
   }, []);
 
   const handleTranslatePid = useCallback(
-    (pid: string) => {
+    (pid: string, forceRetry = false) => {
       if (!docIdRef.current) return;
       const para = pagesRef.current
         .flatMap((page) => page.paragraphs)
         .find((item) => item.pid === pid);
       if (!para) return;
-      if (para.status === "done" || para.status === "loading") return;
+      // Allow retry for error status, or force retry
+      if (para.status === "loading") return;
+      if (para.status === "done" && !forceRetry) return;
 
       translateQueueRef.current = Array.from(new Set([...translateQueueRef.current, pid]));
       window.clearTimeout(debounceRef.current);
@@ -509,7 +520,17 @@ export default function App() {
           <Toolbar.Button className="btn" onClick={handleOpenPdf}>
             Open PDF
           </Toolbar.Button>
-          <div className="status-text">{statusMessage}</div>
+          <div className="status-area">
+            <div className="status-text">{statusMessage}</div>
+            {loadingProgress !== null && (
+              <div className="loading-bar">
+                <div
+                  className="loading-bar-fill"
+                  style={{ width: `${loadingProgress}%` }}
+                />
+              </div>
+            )}
+          </div>
         </div>
         <Toolbar.Separator className="toolbar-sep" />
         <div className="header-right">
@@ -878,7 +899,6 @@ export default function App() {
                 <div className="empty-state">Translations will appear here.</div>
               )}
             </div>
-            <div className="side-footer">OpenRouter translation via Tauri backend.</div>
           </section>
         ) : null}
       </main>
