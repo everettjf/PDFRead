@@ -60,3 +60,28 @@ export type VocabularyEntry = {
   definitions: WordDefinition[];
   added_at: string;
 };
+
+// Book/Library types
+export type FileType = 'pdf' | 'epub';
+
+export type RecentBook = {
+  id: string;
+  filePath: string;
+  fileName: string;
+  fileType: FileType;
+  title: string;
+  author?: string;
+  coverImage?: string;
+  totalPages: number;
+  lastPage: number;
+  progress: number;
+  lastOpenedAt: string;
+};
+
+// Chat types
+export type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+};

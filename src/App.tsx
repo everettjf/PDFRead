@@ -12,10 +12,13 @@ import * as ScrollArea from "@radix-ui/react-scroll-area";
 import * as Toolbar from "@radix-ui/react-toolbar";
 import { PdfViewer } from "./components/PdfViewer";
 import { TranslationPane } from "./components/TranslationPane";
+import { EpubViewer } from "./components/document/EpubViewer";
+import { ChatPanel } from "./components/reader/ChatPanel";
+import { HomeView } from "./views/HomeView";
 import { extractPageParagraphs } from "./lib/textExtraction";
 import { hashBuffer } from "./lib/hash";
 import { LRUCache } from "./lib/lruCache";
-import type { PageDoc, TranslationSettings, WordTranslation, WordDefinition, VocabularyEntry } from "./types";
+import type { PageDoc, TranslationSettings, WordTranslation, WordDefinition, VocabularyEntry, RecentBook, FileType } from "./types";
 import "./App.css";
 
 pdfjsLib.GlobalWorkerOptions.workerPort = new pdfjsWorker();
@@ -43,7 +46,14 @@ const LANGUAGE_PRESETS = [
   { label: "Italian", code: "it" },
 ];
 
+type AppView = "home" | "reader";
+
 export default function App() {
+  const [appView, setAppView] = useState<AppView>("home");
+  const [currentFilePath, setCurrentFilePath] = useState<string | null>(null);
+  const [currentFileType, setCurrentFileType] = useState<FileType>("pdf");
+  const [epubData, setEpubData] = useState<Uint8Array | null>(null);
+  const [epubTotalPages, setEpubTotalPages] = useState<number>(1);
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
   const [pageSizes, setPageSizes] = useState<{ width: number; height: number }[]>([]);
   const [pages, setPages] = useState<PageDoc[]>([]);
@@ -68,6 +78,7 @@ export default function App() {
   const [vocabularyOpen, setVocabularyOpen] = useState(false);
   const [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]);
   const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
 
   const pagesRef = useRef<PageDoc[]>([]);
   const textTranslationCacheRef = useRef(new LRUCache<string, string>(100));
@@ -125,14 +136,11 @@ export default function App() {
       .catch(() => setApiKeyExists(false));
   }, [settingsOpen]);
 
-  const handleOpenPdf = useCallback(async () => {
-    const selection = await open({
-      multiple: false,
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-
-    if (!selection || Array.isArray(selection)) return;
-
+  const loadPdfFromPath = useCallback(async (filePath: string, startPage?: number) => {
+    setAppView("reader");
+    setCurrentFilePath(filePath);
+    setCurrentFileType("pdf");
+    setEpubData(null);
     setLoadingProgress(0);
     setStatusMessage("Loading PDF...");
     setPdfDoc(null);
@@ -144,7 +152,7 @@ export default function App() {
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
 
     setLoadingProgress(5);
-    const rawBytes = (await invoke("read_pdf_file", { path: selection })) as number[];
+    const rawBytes = (await invoke("read_pdf_file", { path: filePath })) as number[];
     const bytes = new Uint8Array(rawBytes);
     const buffer = bytes.buffer.slice(0);
     const hash = await hashBuffer(buffer);
@@ -165,11 +173,34 @@ export default function App() {
 
     const initialPages: PageDoc[] = sizes.map((_, index) => ({ page: index + 1, paragraphs: [] }));
 
+    // Extract filename and title from path
+    const fileName = filePath.split(/[/\\]/).pop() || "Untitled";
+    const title = fileName.replace(/\.[^.]+$/, "");
+
+    // Add to recent books
+    try {
+      await invoke("add_recent_book", {
+        id: nextDocId,
+        filePath: filePath,
+        fileName: fileName,
+        fileType: "pdf",
+        title: title,
+        author: null,
+        coverImage: null,
+        totalPages: doc.numPages,
+      });
+    } catch (error) {
+      console.error("Failed to add to recent books:", error);
+    }
+
     setPdfDoc(doc);
     setPageSizes(sizes);
     setPages(initialPages);
     setDocId(nextDocId);
-    setCurrentPage(1);
+    setCurrentPage(startPage || 1);
+    if (startPage) {
+      setScrollToPage(startPage);
+    }
     setStatusMessage("Extracting text...");
 
     for (let i = 1; i <= doc.numPages; i += 1) {
@@ -183,6 +214,159 @@ export default function App() {
     setLoadingProgress(null);
     setStatusMessage("Ready. Click translate button or select text.");
   }, []);
+
+  const loadEpubFromPath = useCallback(async (filePath: string, startPage?: number) => {
+    setAppView("reader");
+    setCurrentFilePath(filePath);
+    setCurrentFileType("epub");
+    setPdfDoc(null);
+    setPageSizes([]);
+    setLoadingProgress(0);
+    setStatusMessage("Loading EPUB...");
+    translationRequestId.current = 0;
+    translatingRef.current = false;
+    translateQueueRef.current = [];
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+
+    try {
+      const rawBytes = (await invoke("read_pdf_file", { path: filePath })) as number[];
+      const bytes = new Uint8Array(rawBytes);
+      const buffer = bytes.buffer.slice(0);
+      const hash = await hashBuffer(buffer);
+      const nextDocId = hash.slice(0, 12);
+
+      // Extract filename and title from path
+      const fileName = filePath.split(/[/\\]/).pop() || "Untitled";
+      const title = fileName.replace(/\.[^.]+$/, "");
+
+      setEpubData(bytes);
+      setDocId(nextDocId);
+      setCurrentPage(startPage || 1);
+      setLoadingProgress(null);
+      setStatusMessage("Ready. Click translate button or select text.");
+
+      // Add to recent books (will be updated with proper metadata from EPUB)
+      try {
+        await invoke("add_recent_book", {
+          id: nextDocId,
+          filePath: filePath,
+          fileName: fileName,
+          fileType: "epub",
+          title: title,
+          author: null,
+          coverImage: null,
+          totalPages: 1,
+        });
+      } catch (error) {
+        console.error("Failed to add to recent books:", error);
+      }
+    } catch (error) {
+      console.error("Failed to load EPUB:", error);
+      setStatusMessage("Failed to load EPUB file.");
+      setLoadingProgress(null);
+    }
+  }, []);
+
+  const handleEpubMetadata = useCallback(async (metadata: { title: string; author?: string; coverImage?: string }) => {
+    // Update recent book with proper metadata
+    if (docId) {
+      try {
+        await invoke("add_recent_book", {
+          id: docId,
+          filePath: currentFilePath,
+          fileName: currentFilePath?.split(/[/\\]/).pop() || "Untitled",
+          fileType: "epub",
+          title: metadata.title,
+          author: metadata.author || null,
+          coverImage: metadata.coverImage || null,
+          totalPages: epubTotalPages,
+        });
+      } catch (error) {
+        console.error("Failed to update recent book metadata:", error);
+      }
+    }
+  }, [docId, currentFilePath, epubTotalPages]);
+
+  const handleEpubParagraphs = useCallback((paragraphs: any[]) => {
+    // Convert EPUB paragraphs to PageDoc format
+    const epubPage: PageDoc = {
+      page: 1,
+      paragraphs: paragraphs.map((p) => ({
+        pid: p.pid,
+        page: 1,
+        source: p.source,
+        translation: p.translation,
+        status: p.status,
+        rects: [],
+      })),
+    };
+    setPages([epubPage]);
+  }, []);
+
+  const handleEpubPageChange = useCallback((page: number, total: number) => {
+    setCurrentPage(page);
+    setEpubTotalPages(total);
+  }, []);
+
+  const handleOpenFile = useCallback(async () => {
+    const selection = await open({
+      multiple: false,
+      filters: [{ name: "Documents", extensions: ["pdf", "epub"] }],
+    });
+
+    if (!selection || Array.isArray(selection)) return;
+
+    const ext = selection.split('.').pop()?.toLowerCase();
+    if (ext === 'epub') {
+      await loadEpubFromPath(selection);
+    } else {
+      await loadPdfFromPath(selection);
+    }
+  }, [loadPdfFromPath, loadEpubFromPath]);
+
+  const handleOpenBook = useCallback(async (book: RecentBook) => {
+    if (book.fileType === 'epub') {
+      await loadEpubFromPath(book.filePath, book.lastPage);
+    } else {
+      await loadPdfFromPath(book.filePath, book.lastPage);
+    }
+  }, [loadPdfFromPath, loadEpubFromPath]);
+
+  const handleBackToHome = useCallback(() => {
+    // Save progress before leaving
+    if (docId && pdfDoc) {
+      const progress = (currentPage / pdfDoc.numPages) * 100;
+      invoke("update_book_progress", {
+        id: docId,
+        lastPage: currentPage,
+        progress: progress,
+      }).catch(console.error);
+    }
+    setAppView("home");
+    setPdfDoc(null);
+    setPages([]);
+    setPageSizes([]);
+    setCurrentFilePath(null);
+    setChatOpen(false);
+  }, [docId, pdfDoc, currentPage]);
+
+  // Helper functions for chat context
+  const getCurrentPageText = useCallback(() => {
+    const currentPageDoc = pages.find((p) => p.page === currentPage);
+    if (!currentPageDoc) return "";
+    return currentPageDoc.paragraphs.map((p) => p.source).join("\n\n");
+  }, [pages, currentPage]);
+
+  const getSurroundingPagesText = useCallback(() => {
+    const radius = 3;
+    const startPage = Math.max(1, currentPage - radius);
+    const endPage = Math.min(pages.length, currentPage + radius);
+
+    return pages
+      .filter((p) => p.page >= startPage && p.page <= endPage)
+      .map((p) => `--- Page ${p.page} ---\n${p.paragraphs.map((para) => para.source).join("\n\n")}`)
+      .join("\n\n");
+  }, [pages, currentPage]);
 
   const runTranslateQueue = useCallback(async () => {
     if (translatingRef.current) return;
@@ -492,10 +676,95 @@ export default function App() {
 
   const totalPages = pages.length;
 
+  // Save progress when page changes
+  useEffect(() => {
+    if (docId && pdfDoc && currentPage > 0) {
+      const progress = (currentPage / pdfDoc.numPages) * 100;
+      invoke("update_book_progress", {
+        id: docId,
+        lastPage: currentPage,
+        progress: progress,
+      }).catch(() => {});
+    }
+  }, [docId, pdfDoc, currentPage]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger shortcuts when typing in input fields
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      // Cmd/Ctrl + O: Open file
+      if ((e.metaKey || e.ctrlKey) && e.key === "o") {
+        e.preventDefault();
+        handleOpenFile();
+        return;
+      }
+
+      // Cmd/Ctrl + K: Toggle AI Chat
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setChatOpen((prev) => !prev);
+        return;
+      }
+
+      // Escape: Close chat panel or go back to home
+      if (e.key === "Escape") {
+        if (chatOpen) {
+          setChatOpen(false);
+        } else if (appView === "reader") {
+          handleBackToHome();
+        }
+        return;
+      }
+
+      // Zoom shortcuts (when in reader)
+      if (appView === "reader") {
+        // Cmd/Ctrl + Plus: Zoom in
+        if ((e.metaKey || e.ctrlKey) && (e.key === "=" || e.key === "+")) {
+          e.preventDefault();
+          const nextIndex = Math.min(ZOOM_LEVELS.length - 1, currentScaleIndex + 1);
+          setScale(ZOOM_LEVELS[nextIndex]);
+          return;
+        }
+
+        // Cmd/Ctrl + Minus: Zoom out
+        if ((e.metaKey || e.ctrlKey) && e.key === "-") {
+          e.preventDefault();
+          const nextIndex = Math.max(0, currentScaleIndex - 1);
+          setScale(ZOOM_LEVELS[nextIndex]);
+          return;
+        }
+
+        // Cmd/Ctrl + 0: Reset zoom
+        if ((e.metaKey || e.ctrlKey) && e.key === "0") {
+          e.preventDefault();
+          setScale(1);
+          return;
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [appView, chatOpen, currentScaleIndex, handleOpenFile, handleBackToHome]);
+
+  // Show home view
+  if (appView === "home") {
+    return <HomeView onOpenBook={handleOpenBook} onOpenFile={handleOpenFile} />;
+  }
+
   return (
     <div className="app-shell">
       <Toolbar.Root className="app-header" aria-label="Toolbar">
         <div className="header-left">
+          <Toolbar.Button className="btn btn-ghost" onClick={handleBackToHome} title="Back to Library">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
+          </Toolbar.Button>
           <div className="app-title">
             <span className="app-title-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" role="img">
@@ -517,8 +786,8 @@ export default function App() {
             </span>
             PDF Read
           </div>
-          <Toolbar.Button className="btn" onClick={handleOpenPdf}>
-            Open PDF
+          <Toolbar.Button className="btn" onClick={handleOpenFile}>
+            Open File
           </Toolbar.Button>
           <div className="status-area">
             <div className="status-text">{statusMessage}</div>
@@ -573,6 +842,12 @@ export default function App() {
               </Select.Item>
             </Select.Content>
           </Select.Root>
+          <Toolbar.Button
+            className={`btn ${chatOpen ? "btn-primary" : ""}`}
+            onClick={() => setChatOpen(!chatOpen)}
+          >
+            AI Chat
+          </Toolbar.Button>
           <Dialog.Root open={vocabularyOpen} onOpenChange={setVocabularyOpen}>
             <Dialog.Trigger asChild>
               <Toolbar.Button className="btn">Vocabulary</Toolbar.Button>
@@ -860,29 +1135,37 @@ export default function App() {
       <main
         className={`app-main ${viewMode === "pdf" ? "is-pdf-only" : ""} ${
           viewMode === "translation" ? "is-translation-only" : ""
-        }`}
+        } ${chatOpen ? "has-chat" : ""}`}
       >
         {viewMode !== "translation" ? (
           <section className="pane pane-left">
-            {pdfDoc ? (
-            <PdfViewer
-              pdfDoc={pdfDoc}
-              pages={pages}
-              pageSizes={pageSizes}
-              scale={scale}
-              highlightPid={highlightPid}
-              onCurrentPageChange={setCurrentPage}
-              scrollToPage={scrollToPage}
-            />
+            {currentFileType === "epub" && epubData ? (
+              <EpubViewer
+                fileData={epubData}
+                onMetadata={handleEpubMetadata}
+                onParagraphsExtracted={handleEpubParagraphs}
+                onCurrentPageChange={handleEpubPageChange}
+                scale={scale}
+              />
+            ) : pdfDoc ? (
+              <PdfViewer
+                pdfDoc={pdfDoc}
+                pages={pages}
+                pageSizes={pageSizes}
+                scale={scale}
+                highlightPid={highlightPid}
+                onCurrentPageChange={setCurrentPage}
+                scrollToPage={scrollToPage}
+              />
             ) : (
-              <div className="empty-state">No PDF loaded.</div>
+              <div className="empty-state">No document loaded.</div>
             )}
           </section>
         ) : null}
         {viewMode !== "pdf" ? (
           <section className="pane pane-right">
             <div className="pane-body">
-              {pdfDoc ? (
+              {(pdfDoc || epubData) ? (
               <TranslationPane
                 pages={pages}
                 activePid={activePid}
@@ -902,6 +1185,13 @@ export default function App() {
           </section>
         ) : null}
       </main>
+      <ChatPanel
+        isOpen={chatOpen}
+        onClose={() => setChatOpen(false)}
+        model={settings.model}
+        getCurrentPageText={getCurrentPageText}
+        getSurroundingPagesText={getSurroundingPagesText}
+      />
     </div>
   );
 }

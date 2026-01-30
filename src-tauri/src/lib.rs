@@ -543,6 +543,142 @@ fn export_vocabulary_markdown(handle: tauri::AppHandle) -> Result<String, String
     Ok(markdown)
 }
 
+// Recent books management
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecentBook {
+    id: String,
+    file_path: String,
+    file_name: String,
+    file_type: String,
+    title: String,
+    author: Option<String>,
+    cover_image: Option<String>,
+    total_pages: u32,
+    last_page: u32,
+    progress: f32,
+    last_opened_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RecentBooksData {
+    books: Vec<RecentBook>,
+}
+
+fn recent_books_file_path(handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app_config_dir(handle)?.join("recent_books.json"))
+}
+
+fn load_recent_books(handle: &tauri::AppHandle) -> Result<RecentBooksData, String> {
+    let path = recent_books_file_path(handle)?;
+    if !path.exists() {
+        return Ok(RecentBooksData { books: Vec::new() });
+    }
+    let data = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&data).map_err(|e| e.to_string())
+}
+
+fn save_recent_books(handle: &tauri::AppHandle, data: &RecentBooksData) -> Result<(), String> {
+    let path = recent_books_file_path(handle)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_recent_books(handle: tauri::AppHandle) -> Result<Vec<RecentBook>, String> {
+    let data = load_recent_books(&handle)?;
+    let mut books = data.books;
+    books.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+    Ok(books.into_iter().take(50).collect())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn add_recent_book(
+    handle: tauri::AppHandle,
+    id: String,
+    file_path: String,
+    file_name: String,
+    file_type: String,
+    title: String,
+    author: Option<String>,
+    cover_image: Option<String>,
+    total_pages: u32,
+) -> Result<(), String> {
+    let mut data = load_recent_books(&handle)?;
+
+    // Remove existing entry with same id
+    data.books.retain(|b| b.id != id);
+
+    // Add new entry
+    data.books.push(RecentBook {
+        id,
+        file_path,
+        file_name,
+        file_type,
+        title,
+        author,
+        cover_image,
+        total_pages,
+        last_page: 1,
+        progress: 0.0,
+        last_opened_at: Utc::now(),
+    });
+
+    // Keep only last 50 books
+    data.books.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+    data.books.truncate(50);
+
+    save_recent_books(&handle, &data)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn update_book_progress(
+    handle: tauri::AppHandle,
+    id: String,
+    last_page: u32,
+    progress: f32,
+) -> Result<(), String> {
+    let mut data = load_recent_books(&handle)?;
+
+    if let Some(book) = data.books.iter_mut().find(|b| b.id == id) {
+        book.last_page = last_page;
+        book.progress = progress;
+        book.last_opened_at = Utc::now();
+    }
+
+    save_recent_books(&handle, &data)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn remove_recent_book(handle: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut data = load_recent_books(&handle)?;
+    data.books.retain(|b| b.id != id);
+    save_recent_books(&handle, &data)
+}
+
+// Chat with context command
+#[tauri::command(rename_all = "camelCase")]
+async fn chat_with_context(
+    handle: tauri::AppHandle,
+    model: String,
+    context: String,
+    question: String,
+) -> Result<String, String> {
+    let api_key = load_openrouter_key(&handle)?;
+
+    let system_prompt = "You are a helpful reading assistant. Answer questions about the provided text context clearly and concisely. If the answer cannot be found in the context, say so.";
+
+    let user_prompt = format!(
+        "Context from the document:\n\n{}\n\n---\n\nQuestion: {}",
+        context, question
+    );
+
+    let content = request_openrouter(&api_key, &model, 0.3, system_prompt, &user_prompt).await?;
+    Ok(content)
+}
+
 fn extract_json_object(content: &str) -> String {
     let trimmed = content.trim();
 
@@ -590,7 +726,12 @@ pub fn run() {
             remove_vocabulary_word,
             get_vocabulary,
             is_word_in_vocabulary,
-            export_vocabulary_markdown
+            export_vocabulary_markdown,
+            get_recent_books,
+            add_recent_book,
+            update_book_progress,
+            remove_recent_book,
+            chat_with_context
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
