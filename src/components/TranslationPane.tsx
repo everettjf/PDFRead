@@ -129,12 +129,10 @@ function PageTranslation({
       const text = node.textContent || "";
       const offset = range.startOffset;
 
-      // Check if we clicked on or right next to a letter
-      // Must have a letter at current position or immediately before it
+      // Must click directly on a letter character
       const charAtOffset = text[offset] || "";
-      const charBefore = offset > 0 ? text[offset - 1] : "";
-      if (!/[a-zA-Z]/.test(charAtOffset) && !/[a-zA-Z]/.test(charBefore)) {
-        // Clicked on whitespace or punctuation, not on a word
+      if (!/[a-zA-Z]/.test(charAtOffset)) {
+        // Clicked on whitespace, punctuation, or end of text
         return;
       }
 
