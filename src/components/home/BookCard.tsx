@@ -1,85 +1,118 @@
+import { useCallback } from "react";
+import * as ContextMenu from "@radix-ui/react-context-menu";
+import * as Tooltip from "@radix-ui/react-tooltip";
+import * as Progress from "@radix-ui/react-progress";
 import type { RecentBook } from "../../types";
 
-type BookCardProps = {
+type BookListItemProps = {
   book: RecentBook;
   onOpen: (book: RecentBook) => void;
   onRemove: (book: RecentBook) => void;
 };
 
-function FileIcon({ type }: { type: string }) {
-  if (type === 'epub') {
-    return (
-      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-        <path d="M8 7h8M8 11h8M8 15h5" />
-      </svg>
-    );
-  }
+function PdfIcon() {
   return (
-    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
-      <line x1="16" y1="13" x2="8" y2="13" />
-      <line x1="16" y1="17" x2="8" y2="17" />
-      <polyline points="10 9 9 9 8 9" />
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="book-icon book-icon-pdf">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" fill="currentColor" opacity="0.15" />
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.5" fill="none" />
+      <polyline points="14 2 14 8 20 8" stroke="currentColor" strokeWidth="1.5" fill="none" />
     </svg>
   );
 }
 
-function RemoveIcon() {
+function EpubIcon() {
   return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" className="book-icon book-icon-epub">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" fill="currentColor" opacity="0.15" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" fill="currentColor" opacity="0.15" />
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke="currentColor" strokeWidth="1.5" fill="none" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke="currentColor" strokeWidth="1.5" fill="none" />
     </svg>
   );
 }
 
-export function BookCard({ book, onOpen, onRemove }: BookCardProps) {
+function TrashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function formatRelativeTime(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffSecs = Math.floor(diffMs / 1000);
+  const diffMins = Math.floor(diffSecs / 60);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffSecs < 60) return "Just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  return date.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+  });
+}
+
+export function BookCard({ book, onOpen, onRemove }: BookListItemProps) {
   const progressPercent = Math.round(book.progress);
 
+  const handleRemove = useCallback((e: Event) => {
+    e.preventDefault();
+    onRemove(book);
+  }, [book, onRemove]);
+
   return (
-    <div className="book-card" onClick={() => onOpen(book)}>
-      <button
-        className="book-card-remove"
-        onClick={(e) => {
-          e.stopPropagation();
-          onRemove(book);
-        }}
-        title="Remove from library"
-      >
-        <RemoveIcon />
-      </button>
-      <div className="book-card-cover">
-        {book.coverImage ? (
-          <img src={book.coverImage} alt={book.title} />
-        ) : (
-          <div className="book-card-placeholder">
-            <FileIcon type={book.fileType} />
+    <ContextMenu.Root>
+      <ContextMenu.Trigger asChild>
+        <div className="book-card" onClick={() => onOpen(book)}>
+          <div className="book-card-icon">
+            {book.fileType === 'epub' ? <EpubIcon /> : <PdfIcon />}
           </div>
-        )}
-      </div>
-      <div className="book-card-info">
-        <div className="book-card-title" title={book.title}>
-          {book.title}
-        </div>
-        {book.author && (
-          <div className="book-card-author" title={book.author}>
-            {book.author}
+          <div className="book-card-content">
+            <div className="book-card-title">{book.title}</div>
+            <div className="book-card-meta">
+              <span className="book-card-badge">{book.fileType.toUpperCase()}</span>
+              <span className="book-card-dot" />
+              <span className="book-card-time">{formatRelativeTime(book.lastOpenedAt)}</span>
+            </div>
           </div>
-        )}
-        <div className="book-card-meta">
-          <span className="book-card-type">{book.fileType.toUpperCase()}</span>
-          <span className="book-card-progress">{progressPercent}%</span>
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <div className="book-card-progress">
+                <Progress.Root className="progress-root" value={progressPercent}>
+                  <Progress.Indicator
+                    className="progress-indicator"
+                    style={{ transform: `translateX(-${100 - progressPercent}%)` }}
+                  />
+                </Progress.Root>
+                <span className="book-card-progress-text">{progressPercent}%</span>
+              </div>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content className="tooltip-content" sideOffset={5}>
+                {progressPercent}% read · Page {book.lastPage} of {book.totalPages}
+                <Tooltip.Arrow className="tooltip-arrow" />
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
         </div>
-        <div className="book-card-progress-bar">
-          <div
-            className="book-card-progress-fill"
-            style={{ width: `${progressPercent}%` }}
-          />
-        </div>
-      </div>
-    </div>
+      </ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content className="context-menu">
+          <ContextMenu.Item className="context-menu-item context-menu-item-danger" onSelect={handleRemove}>
+            <TrashIcon />
+            <span>Remove from Library</span>
+          </ContextMenu.Item>
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu.Root>
   );
 }

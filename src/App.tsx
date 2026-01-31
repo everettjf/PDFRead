@@ -152,68 +152,75 @@ export default function App() {
     translateQueueRef.current = [];
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
 
-    setLoadingProgress(5);
-    const rawBytes = (await invoke("read_pdf_file", { path: filePath })) as number[];
-    const bytes = new Uint8Array(rawBytes);
-    const buffer = bytes.buffer.slice(0);
-    const hash = await hashBuffer(buffer);
-    const nextDocId = hash.slice(0, 12);
-
-    setLoadingProgress(15);
-    const loadingTask = pdfjsLib.getDocument({ data: bytes });
-    const doc = await loadingTask.promise;
-
-    setLoadingProgress(25);
-    const sizes: { width: number; height: number }[] = [];
-    for (let i = 1; i <= doc.numPages; i += 1) {
-      const page = await doc.getPage(i);
-      const viewport = page.getViewport({ scale: 1 });
-      sizes.push({ width: viewport.width, height: viewport.height });
-      setLoadingProgress(25 + Math.round((i / doc.numPages) * 25));
-    }
-
-    const initialPages: PageDoc[] = sizes.map((_, index) => ({ page: index + 1, paragraphs: [] }));
-
-    // Extract filename and title from path
-    const fileName = filePath.split(/[/\\]/).pop() || "Untitled";
-    const title = fileName.replace(/\.[^.]+$/, "");
-
-    // Add to recent books
     try {
-      await invoke("add_recent_book", {
-        id: nextDocId,
-        filePath: filePath,
-        fileName: fileName,
-        fileType: "pdf",
-        title: title,
-        author: null,
-        coverImage: null,
-        totalPages: doc.numPages,
-      });
+      setLoadingProgress(5);
+      const rawBytes = (await invoke("read_pdf_file", { path: filePath })) as number[];
+      const bytes = new Uint8Array(rawBytes);
+      const buffer = bytes.buffer.slice(0);
+      const hash = await hashBuffer(buffer);
+      const nextDocId = hash.slice(0, 12);
+
+      setLoadingProgress(15);
+      const loadingTask = pdfjsLib.getDocument({ data: bytes });
+      const doc = await loadingTask.promise;
+
+      setLoadingProgress(25);
+      const sizes: { width: number; height: number }[] = [];
+      for (let i = 1; i <= doc.numPages; i += 1) {
+        const page = await doc.getPage(i);
+        const viewport = page.getViewport({ scale: 1 });
+        sizes.push({ width: viewport.width, height: viewport.height });
+        setLoadingProgress(25 + Math.round((i / doc.numPages) * 25));
+      }
+
+      const initialPages: PageDoc[] = sizes.map((_, index) => ({ page: index + 1, paragraphs: [] }));
+
+      // Extract filename and title from path
+      const fileName = filePath.split(/[/\\]/).pop() || "Untitled";
+      const title = fileName.replace(/\.[^.]+$/, "");
+
+      // Add to recent books
+      try {
+        await invoke("add_recent_book", {
+          id: nextDocId,
+          filePath: filePath,
+          fileName: fileName,
+          fileType: "pdf",
+          title: title,
+          author: null,
+          coverImage: null,
+          totalPages: doc.numPages,
+        });
+      } catch (error) {
+        console.error("Failed to add to recent books:", error);
+      }
+
+      setPdfDoc(doc);
+      setPageSizes(sizes);
+      setPages(initialPages);
+      setDocId(nextDocId);
+      setCurrentPage(startPage || 1);
+      if (startPage) {
+        setScrollToPage(startPage);
+      }
+      setStatusMessage("Extracting text...");
+
+      for (let i = 1; i <= doc.numPages; i += 1) {
+        const page = await doc.getPage(i);
+        const { paragraphs, watermarks } = await extractPageParagraphs(page, nextDocId, i - 1);
+        setPages((prev) =>
+          prev.map((entry) => (entry.page === i ? { ...entry, paragraphs, watermarks } : entry))
+        );
+        setLoadingProgress(50 + Math.round((i / doc.numPages) * 50));
+      }
+      setLoadingProgress(null);
+      setStatusMessage("Ready. Click translate button or select text.");
     } catch (error) {
-      console.error("Failed to add to recent books:", error);
+      console.error("Failed to load PDF:", error);
+      setLoadingProgress(null);
+      setStatusMessage("Failed to load PDF. The file may have been moved or deleted.");
+      setAppView("home");
     }
-
-    setPdfDoc(doc);
-    setPageSizes(sizes);
-    setPages(initialPages);
-    setDocId(nextDocId);
-    setCurrentPage(startPage || 1);
-    if (startPage) {
-      setScrollToPage(startPage);
-    }
-    setStatusMessage("Extracting text...");
-
-    for (let i = 1; i <= doc.numPages; i += 1) {
-      const page = await doc.getPage(i);
-      const { paragraphs, watermarks } = await extractPageParagraphs(page, nextDocId, i - 1);
-      setPages((prev) =>
-        prev.map((entry) => (entry.page === i ? { ...entry, paragraphs, watermarks } : entry))
-      );
-      setLoadingProgress(50 + Math.round((i / doc.numPages) * 50));
-    }
-    setLoadingProgress(null);
-    setStatusMessage("Ready. Click translate button or select text.");
   }, []);
 
   const loadEpubFromPath = useCallback(async (filePath: string, startPage?: number) => {
@@ -263,8 +270,9 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to load EPUB:", error);
-      setStatusMessage("Failed to load EPUB file.");
+      setStatusMessage("Failed to load EPUB. The file may have been moved or deleted.");
       setLoadingProgress(null);
+      setAppView("home");
     }
   }, []);
 
@@ -844,72 +852,6 @@ export default function App() {
               </Select.Item>
             </Select.Content>
           </Select.Root>
-          <Dialog.Root open={vocabularyOpen} onOpenChange={setVocabularyOpen}>
-            <Dialog.Trigger asChild>
-              <Toolbar.Button className="btn btn-icon">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-                  <path d="M8 7h8M8 11h8M8 15h5" />
-                </svg>
-                <span>Vocabulary</span>
-              </Toolbar.Button>
-            </Dialog.Trigger>
-            <Dialog.Portal>
-              <Dialog.Overlay className="dialog-overlay" />
-              <Dialog.Content className="dialog-content dialog-content-vocabulary">
-                <Dialog.Title className="dialog-title">Vocabulary</Dialog.Title>
-                <Dialog.Description className="dialog-description">
-                  Words you've saved while reading.
-                </Dialog.Description>
-                <div className="vocabulary-content">
-                  {vocabulary.length === 0 ? (
-                    <div className="vocabulary-empty">
-                      No words saved yet. Click the heart icon on word translations to add them here.
-                    </div>
-                  ) : (
-                    <ScrollArea.Root className="vocabulary-scroll">
-                      <ScrollArea.Viewport className="vocabulary-list">
-                        {vocabulary.map((entry) => (
-                          <div key={entry.word} className="vocabulary-item">
-                            <div className="vocabulary-item-header">
-                              <span className="vocabulary-word">{entry.word}</span>
-                              {entry.phonetic && (
-                                <span className="vocabulary-phonetic">{entry.phonetic}</span>
-                              )}
-                            </div>
-                            <div className="vocabulary-definitions">
-                              {entry.definitions.map((def, idx) => (
-                                <div key={idx} className="vocabulary-definition">
-                                  {def.pos && <span className="vocabulary-pos">{def.pos}</span>}
-                                  <span className="vocabulary-meanings">{def.meanings}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </ScrollArea.Viewport>
-                      <ScrollArea.Scrollbar orientation="vertical" className="scrollbar">
-                        <ScrollArea.Thumb className="scrollbar-thumb" />
-                      </ScrollArea.Scrollbar>
-                    </ScrollArea.Root>
-                  )}
-                </div>
-                <div className="vocabulary-actions">
-                  <button
-                    className="btn"
-                    onClick={handleExportVocabulary}
-                    disabled={vocabulary.length === 0}
-                  >
-                    Export Markdown
-                  </button>
-                  <Dialog.Close asChild>
-                    <button className="btn btn-primary">Done</button>
-                  </Dialog.Close>
-                </div>
-              </Dialog.Content>
-            </Dialog.Portal>
-          </Dialog.Root>
           <Dialog.Root open={settingsOpen} onOpenChange={setSettingsOpen}>
             <Dialog.Trigger asChild>
               <Toolbar.Button className="btn btn-icon">
@@ -1136,6 +1078,72 @@ export default function App() {
                 <Dialog.Close asChild>
                   <button className="btn btn-primary">Done</button>
                 </Dialog.Close>
+              </Dialog.Content>
+            </Dialog.Portal>
+          </Dialog.Root>
+          <Dialog.Root open={vocabularyOpen} onOpenChange={setVocabularyOpen}>
+            <Dialog.Trigger asChild>
+              <Toolbar.Button className="btn btn-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                  <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                  <path d="M8 7h8M8 11h8M8 15h5" />
+                </svg>
+                <span>Vocabulary</span>
+              </Toolbar.Button>
+            </Dialog.Trigger>
+            <Dialog.Portal>
+              <Dialog.Overlay className="dialog-overlay" />
+              <Dialog.Content className="dialog-content dialog-content-vocabulary">
+                <Dialog.Title className="dialog-title">Vocabulary</Dialog.Title>
+                <Dialog.Description className="dialog-description">
+                  Words you've saved while reading.
+                </Dialog.Description>
+                <div className="vocabulary-content">
+                  {vocabulary.length === 0 ? (
+                    <div className="vocabulary-empty">
+                      No words saved yet. Click the heart icon on word translations to add them here.
+                    </div>
+                  ) : (
+                    <ScrollArea.Root className="vocabulary-scroll">
+                      <ScrollArea.Viewport className="vocabulary-list">
+                        {vocabulary.map((entry) => (
+                          <div key={entry.word} className="vocabulary-item">
+                            <div className="vocabulary-item-header">
+                              <span className="vocabulary-word">{entry.word}</span>
+                              {entry.phonetic && (
+                                <span className="vocabulary-phonetic">{entry.phonetic}</span>
+                              )}
+                            </div>
+                            <div className="vocabulary-definitions">
+                              {entry.definitions.map((def, idx) => (
+                                <div key={idx} className="vocabulary-definition">
+                                  {def.pos && <span className="vocabulary-pos">{def.pos}</span>}
+                                  <span className="vocabulary-meanings">{def.meanings}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </ScrollArea.Viewport>
+                      <ScrollArea.Scrollbar orientation="vertical" className="scrollbar">
+                        <ScrollArea.Thumb className="scrollbar-thumb" />
+                      </ScrollArea.Scrollbar>
+                    </ScrollArea.Root>
+                  )}
+                </div>
+                <div className="vocabulary-actions">
+                  <button
+                    className="btn"
+                    onClick={handleExportVocabulary}
+                    disabled={vocabulary.length === 0}
+                  >
+                    Export Markdown
+                  </button>
+                  <Dialog.Close asChild>
+                    <button className="btn btn-primary">Done</button>
+                  </Dialog.Close>
+                </div>
               </Dialog.Content>
             </Dialog.Portal>
           </Dialog.Root>
