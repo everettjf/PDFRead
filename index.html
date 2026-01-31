@@ -6,17 +6,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PDF Read</title>
     <style>
-      /* Prevent white flash on startup */
+      /* Prevent flash on startup - must match App.css theme colors */
       html, body, #root {
         margin: 0;
         padding: 0;
         height: 100%;
-        background: #141310;
+        background: #1c1c1e;
+        color-scheme: dark;
       }
       @media (prefers-color-scheme: light) {
         html, body, #root {
-          background: #f2efe9;
+          background: #f5f5f5;
+          color-scheme: light;
         }
+      }
+      /* Hide content until styles load */
+      #root:empty {
+        visibility: hidden;
       }
     </style>
   </head>

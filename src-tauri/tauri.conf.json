@@ -14,7 +14,8 @@
       {
         "title": "PDFRead",
         "width": 1400,
-        "height": 850
+        "height": 850,
+        "backgroundColor": "#1c1c1e"
       }
     ],
     "security": {

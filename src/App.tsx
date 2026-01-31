@@ -762,7 +762,14 @@ export default function App() {
 
   // Show home view
   if (appView === "home") {
-    return <HomeView onOpenBook={handleOpenBook} onOpenFile={handleOpenFile} />;
+    return (
+      <HomeView
+        onOpenBook={handleOpenBook}
+        onOpenFile={handleOpenFile}
+        settings={settings}
+        onSettingsChange={setSettings}
+      />
+    );
   }
 
   return (
