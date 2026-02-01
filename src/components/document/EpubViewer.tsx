@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from "react";
 import ePub from "epubjs";
 import type { Book, NavItem, Rendition } from "epubjs";
 import * as ScrollArea from "@radix-ui/react-scroll-area";
@@ -8,6 +8,8 @@ type EpubParagraph = {
   source: string;
   translation?: string;
   status: "idle" | "loading" | "done" | "error";
+  href?: string; // Store the spine item href for navigation
+  sectionTitle?: string; // Chapter/section title for display
 };
 
 type EpubViewerProps = {
@@ -15,49 +17,108 @@ type EpubViewerProps = {
   onMetadata: (metadata: { title: string; author?: string; coverImage?: string }) => void;
   onParagraphsExtracted: (paragraphs: EpubParagraph[]) => void;
   onCurrentPageChange: (page: number, total: number) => void;
+  onLoadingProgress?: (progress: number | null) => void;
   scale: number;
 };
 
-export function EpubViewer({
+export type EpubViewerHandle = {
+  navigateTo: (pid: string) => void;
+};
+
+export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function EpubViewer({
   fileData,
   onMetadata,
   onParagraphsExtracted,
   onCurrentPageChange,
+  onLoadingProgress,
   scale,
-}: EpubViewerProps) {
+}, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
+  const tocRef = useRef<NavItem[]>([]);
+  const paragraphMapRef = useRef<Map<string, string>>(new Map()); // pid -> href
   const [toc, setToc] = useState<NavItem[]>([]);
   const [currentChapter, setCurrentChapter] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
+  // Store callbacks in refs to avoid dependency issues
+  const onMetadataRef = useRef(onMetadata);
+  const onParagraphsExtractedRef = useRef(onParagraphsExtracted);
+  const onCurrentPageChangeRef = useRef(onCurrentPageChange);
+  const onLoadingProgressRef = useRef(onLoadingProgress);
+
+  useEffect(() => {
+    onMetadataRef.current = onMetadata;
+  }, [onMetadata]);
+
+  useEffect(() => {
+    onParagraphsExtractedRef.current = onParagraphsExtracted;
+  }, [onParagraphsExtracted]);
+
+  useEffect(() => {
+    onCurrentPageChangeRef.current = onCurrentPageChange;
+  }, [onCurrentPageChange]);
+
+  useEffect(() => {
+    onLoadingProgressRef.current = onLoadingProgress;
+  }, [onLoadingProgress]);
+
+  // Expose navigation method via ref
+  useImperativeHandle(ref, () => ({
+    navigateTo: (pid: string) => {
+      const href = paragraphMapRef.current.get(pid);
+      if (href && renditionRef.current) {
+        renditionRef.current.display(href);
+      }
+    },
+  }), []);
+
+  // Load book only when fileData changes
   useEffect(() => {
     if (!containerRef.current || !fileData) return;
 
     const loadBook = async () => {
       try {
         setLoading(true);
+        onLoadingProgressRef.current?.(5);
+
+        // Clean up previous book
+        if (bookRef.current) {
+          bookRef.current.destroy();
+          bookRef.current = null;
+          renditionRef.current = null;
+        }
+
+        // Clear container and paragraph map
+        if (containerRef.current) {
+          containerRef.current.innerHTML = "";
+        }
+        paragraphMapRef.current.clear();
 
         // Create book from array buffer
         const book = ePub(fileData.buffer);
         bookRef.current = book;
+        onLoadingProgressRef.current?.(15);
 
         // Wait for book to be ready
         await book.ready;
+        onLoadingProgressRef.current?.(25);
 
         // Get metadata
         const metadata = await book.loaded.metadata;
         const cover = await book.coverUrl();
 
-        onMetadata({
+        onMetadataRef.current({
           title: metadata.title || "Untitled",
           author: metadata.creator,
           coverImage: cover || undefined,
         });
+        onLoadingProgressRef.current?.(35);
 
         // Get table of contents
         const navigation = await book.loaded.navigation;
+        tocRef.current = navigation.toc;
         setToc(navigation.toc);
 
         // Create rendition
@@ -70,35 +131,45 @@ export function EpubViewer({
 
         renditionRef.current = rendition;
 
-        // Apply scale/font size
+        // Apply initial scale
         rendition.themes.fontSize(`${100 * scale}%`);
-
-        // Display first section
-        await rendition.display();
-
-        // Extract text for translation
-        extractParagraphs(book);
 
         // Track location changes
         rendition.on("relocated", (location: any) => {
           if (location.start) {
             const currentPage = location.start.displayed?.page || 1;
             const totalPages = location.start.displayed?.total || 1;
-            onCurrentPageChange(currentPage, totalPages);
+            onCurrentPageChangeRef.current(currentPage, totalPages);
 
-            // Find current chapter
+            // Find current chapter using ref for latest value
             const href = location.start.href;
-            const chapter = toc.find((item) => item.href.includes(href));
+            const currentToc = tocRef.current;
+            const chapter = currentToc.find((item) => {
+              // Handle both full href and partial matches
+              const itemHref = item.href.split("#")[0];
+              return href.includes(itemHref) || itemHref.includes(href);
+            });
             if (chapter) {
               setCurrentChapter(chapter.label);
             }
           }
         });
 
+        onLoadingProgressRef.current?.(45);
+
+        // Display first section
+        await rendition.display();
+        onLoadingProgressRef.current?.(55);
+
+        // Extract text for translation (this will report progress 55-100%)
+        await extractParagraphs(book);
+
         setLoading(false);
+        onLoadingProgressRef.current?.(null);
       } catch (error) {
         console.error("Failed to load EPUB:", error);
         setLoading(false);
+        onLoadingProgressRef.current?.(null);
       }
     };
 
@@ -108,37 +179,105 @@ export function EpubViewer({
       if (bookRef.current) {
         bookRef.current.destroy();
         bookRef.current = null;
+        renditionRef.current = null;
       }
     };
-  }, [fileData, onMetadata, onCurrentPageChange, scale]);
+  }, [fileData]); // Only depend on fileData
+
+  // Handle scale changes separately without reloading the book
+  useEffect(() => {
+    if (renditionRef.current) {
+      renditionRef.current.themes.fontSize(`${100 * scale}%`);
+    }
+  }, [scale]);
 
   const extractParagraphs = async (book: Book) => {
     const paragraphs: EpubParagraph[] = [];
     let pidCounter = 0;
 
+    // Helper to find section title from TOC
+    const findSectionTitle = (href: string): string | undefined => {
+      const toc = tocRef.current;
+      for (const item of toc) {
+        const itemHref = item.href.split("#")[0];
+        if (href.includes(itemHref) || itemHref.includes(href)) {
+          return item.label;
+        }
+      }
+      return undefined;
+    };
+
     try {
       const spine = book.spine as any;
+      if (!spine || !spine.items) {
+        console.warn("EPUB spine is empty or undefined");
+        onParagraphsExtractedRef.current(paragraphs);
+        return;
+      }
+
+      const totalItems = spine.items.length;
+      let processedItems = 0;
+
       for (const item of spine.items) {
-        const doc = await book.load(item.href);
-        if (doc instanceof Document) {
-          const textNodes = doc.querySelectorAll("p, h1, h2, h3, h4, h5, h6");
-          textNodes.forEach((node) => {
-            const text = node.textContent?.trim();
-            if (text && text.length > 10) {
+        try {
+          const doc = await book.load(item.href);
+          const sectionTitle = findSectionTitle(item.href);
+          // Handle both Document and string responses
+          let textContent: string[] = [];
+
+          if (doc instanceof Document) {
+            const textNodes = doc.querySelectorAll("p, h1, h2, h3, h4, h5, h6, div, span");
+            textNodes.forEach((node) => {
+              const text = node.textContent?.trim();
+              if (text && text.length > 10) {
+                textContent.push(text);
+              }
+            });
+          } else if (typeof doc === "string") {
+            // Parse HTML string
+            const parser = new DOMParser();
+            const parsed = parser.parseFromString(doc, "text/html");
+            const textNodes = parsed.querySelectorAll("p, h1, h2, h3, h4, h5, h6, div, span");
+            textNodes.forEach((node) => {
+              const text = node.textContent?.trim();
+              if (text && text.length > 10) {
+                textContent.push(text);
+              }
+            });
+          }
+
+          // Deduplicate and add to paragraphs
+          const seen = new Set<string>();
+          for (const text of textContent) {
+            if (!seen.has(text)) {
+              seen.add(text);
+              const pid = `epub:${pidCounter++}`;
               paragraphs.push({
-                pid: `epub:${pidCounter++}`,
+                pid,
                 source: text,
                 status: "idle",
+                href: item.href,
+                sectionTitle,
               });
+              // Store mapping for navigation
+              paragraphMapRef.current.set(pid, item.href);
             }
-          });
+          }
+        } catch (itemError) {
+          console.warn(`Failed to load spine item ${item.href}:`, itemError);
         }
+
+        processedItems++;
+        // Report progress from 55% to 100%
+        const progress = 55 + Math.round((processedItems / totalItems) * 45);
+        onLoadingProgressRef.current?.(progress);
       }
     } catch (error) {
       console.error("Failed to extract paragraphs:", error);
     }
 
-    onParagraphsExtracted(paragraphs);
+    console.log(`Extracted ${paragraphs.length} paragraphs from EPUB`);
+    onParagraphsExtractedRef.current(paragraphs);
   };
 
   const handlePrev = useCallback(() => {
@@ -150,7 +289,9 @@ export function EpubViewer({
   }, []);
 
   const handleTocClick = useCallback((href: string) => {
-    renditionRef.current?.display(href);
+    if (renditionRef.current) {
+      renditionRef.current.display(href);
+    }
   }, []);
 
   return (
@@ -162,7 +303,7 @@ export function EpubViewer({
             <div className="epub-toc">
               {toc.map((item, index) => (
                 <button
-                  key={index}
+                  key={item.href || index}
                   className={`epub-toc-item ${currentChapter === item.label ? "is-active" : ""}`}
                   onClick={() => handleTocClick(item.href)}
                 >
@@ -191,4 +332,4 @@ export function EpubViewer({
       </div>
     </div>
   );
-}
+});

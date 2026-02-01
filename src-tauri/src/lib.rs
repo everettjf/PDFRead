@@ -231,7 +231,60 @@ fn build_user_prompt(target_language: &TargetLanguage, sentences: &[TranslateSen
 
 #[tauri::command]
 fn read_pdf_file(path: String) -> Result<Vec<u8>, String> {
-    fs::read(path).map_err(|e| e.to_string())
+    let path_ref = std::path::Path::new(&path);
+
+    // Check if the path is a directory (macOS treats some epub files as bundles)
+    if path_ref.is_dir() {
+        // If it's a directory (epub bundle), zip it into memory
+        return zip_directory_to_bytes(path_ref);
+    }
+
+    fs::read(&path).map_err(|e| e.to_string())
+}
+
+fn zip_directory_to_bytes(dir_path: &std::path::Path) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Write};
+    use walkdir::WalkDir;
+    use zip::write::SimpleFileOptions;
+
+    let mut buffer = std::io::Cursor::new(Vec::new());
+
+    {
+        let mut zip = zip::ZipWriter::new(&mut buffer);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+
+        for entry in WalkDir::new(dir_path) {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            let relative_path = path.strip_prefix(dir_path)
+                .map_err(|e| e.to_string())?;
+
+            // Skip the root directory itself
+            if relative_path.as_os_str().is_empty() {
+                continue;
+            }
+
+            let relative_str = relative_path.to_string_lossy();
+
+            if path.is_file() {
+                zip.start_file(relative_str.to_string(), options)
+                    .map_err(|e| e.to_string())?;
+                let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+                let mut contents = Vec::new();
+                file.read_to_end(&mut contents).map_err(|e| e.to_string())?;
+                zip.write_all(&contents).map_err(|e| e.to_string())?;
+            } else if path.is_dir() {
+                // Add directory entry
+                zip.add_directory(format!("{}/", relative_str), options)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+
+        zip.finish().map_err(|e| e.to_string())?;
+    }
+
+    Ok(buffer.into_inner())
 }
 
 async fn request_openrouter(
@@ -608,8 +661,8 @@ fn add_recent_book(
 ) -> Result<(), String> {
     let mut data = load_recent_books(&handle)?;
 
-    // Remove existing entry with same id
-    data.books.retain(|b| b.id != id);
+    // Remove existing entry with same id OR same file_path (to prevent duplicates)
+    data.books.retain(|b| b.id != id && b.file_path != file_path);
 
     // Add new entry
     data.books.push(RecentBook {

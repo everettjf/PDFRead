@@ -19,6 +19,7 @@ export type PageDoc = {
   page: number;
   paragraphs: Paragraph[];
   watermarks?: string[];
+  title?: string; // Optional title for the page (e.g., chapter name for EPUB)
 };
 
 export type TargetLanguage = {

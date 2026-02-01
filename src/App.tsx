@@ -13,7 +13,7 @@ import * as Toolbar from "@radix-ui/react-toolbar";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { PdfViewer } from "./components/PdfViewer";
 import { TranslationPane } from "./components/TranslationPane";
-import { EpubViewer } from "./components/document/EpubViewer";
+import { EpubViewer, type EpubViewerHandle } from "./components/document/EpubViewer";
 import { ChatPanel } from "./components/reader/ChatPanel";
 import { HomeView } from "./views/HomeView";
 import { extractPageParagraphs } from "./lib/textExtraction";
@@ -64,7 +64,7 @@ export default function App() {
   const [settings, setSettings] = useState<TranslationSettings>(DEFAULT_SETTINGS);
   const [hoverPid, setHoverPid] = useState<string | null>(null);
   const [activePid, setActivePid] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>("Open a PDF to get started.");
+  const [statusMessage, setStatusMessage] = useState<string>("Open a document to get started.");
   const [viewMode, setViewMode] = useState<"split" | "pdf" | "translation">("split");
   const [languageOpen, setLanguageOpen] = useState(false);
   const [languageQuery, setLanguageQuery] = useState("");
@@ -85,6 +85,7 @@ export default function App() {
   const textTranslationCacheRef = useRef(new LRUCache<string, string>(100));
   const settingsRef = useRef(settings);
   const docIdRef = useRef(docId);
+  const epubViewerRef = useRef<EpubViewerHandle>(null);
   const translationRequestId = useRef(0);
   const translatingRef = useRef(false);
   const debounceRef = useRef<number | undefined>(undefined);
@@ -297,19 +298,34 @@ export default function App() {
   }, [docId, currentFilePath, epubTotalPages]);
 
   const handleEpubParagraphs = useCallback((paragraphs: any[]) => {
-    // Convert EPUB paragraphs to PageDoc format
-    const epubPage: PageDoc = {
-      page: 1,
-      paragraphs: paragraphs.map((p) => ({
-        pid: p.pid,
-        page: 1,
-        source: p.source,
-        translation: p.translation,
-        status: p.status,
-        rects: [],
-      })),
-    };
-    setPages([epubPage]);
+    // Split EPUB paragraphs into virtual pages (20 paragraphs per page)
+    const PARAGRAPHS_PER_PAGE = 20;
+    const epubPages: PageDoc[] = [];
+
+    for (let i = 0; i < paragraphs.length; i += PARAGRAPHS_PER_PAGE) {
+      const pageNum = Math.floor(i / PARAGRAPHS_PER_PAGE) + 1;
+      const pageParagraphs = paragraphs.slice(i, i + PARAGRAPHS_PER_PAGE);
+
+      // Use the first paragraph's section title as the page title
+      const firstWithTitle = pageParagraphs.find((p: any) => p.sectionTitle);
+      const pageTitle = firstWithTitle?.sectionTitle;
+
+      epubPages.push({
+        page: pageNum,
+        title: pageTitle, // Chapter/section title for EPUB
+        paragraphs: pageParagraphs.map((p: any) => ({
+          pid: p.pid,
+          page: pageNum,
+          source: p.source,
+          translation: p.translation,
+          status: p.status,
+          rects: [],
+        })),
+      });
+    }
+
+    setPages(epubPages);
+    setEpubTotalPages(epubPages.length);
   }, []);
 
   const handleEpubPageChange = useCallback((page: number, total: number) => {
@@ -342,9 +358,10 @@ export default function App() {
   }, [loadPdfFromPath, loadEpubFromPath]);
 
   const handleBackToHome = useCallback(() => {
-    // Save progress before leaving
-    if (docId && pdfDoc) {
-      const progress = (currentPage / pdfDoc.numPages) * 100;
+    // Save progress before leaving (works for both PDF and EPUB)
+    const total = pdfDoc ? pdfDoc.numPages : epubTotalPages;
+    if (docId && total > 0) {
+      const progress = (currentPage / total) * 100;
       invoke("update_book_progress", {
         id: docId,
         lastPage: currentPage,
@@ -353,11 +370,12 @@ export default function App() {
     }
     setAppView("home");
     setPdfDoc(null);
+    setEpubData(null);
     setPages([]);
     setPageSizes([]);
     setCurrentFilePath(null);
     setChatOpen(false);
-  }, [docId, pdfDoc, currentPage]);
+  }, [docId, pdfDoc, epubTotalPages, currentPage]);
 
   // Helper functions for chat context
   const getCurrentPageText = useCallback(() => {
@@ -509,9 +527,15 @@ export default function App() {
   const handleLocatePid = useCallback(
     (pid: string, page: number) => {
       setActivePid(pid);
-      setScrollToPage(page);
+      if (currentFileType === "epub") {
+        // For epub, use the viewer ref to navigate
+        epubViewerRef.current?.navigateTo(pid);
+      } else {
+        // For PDF, scroll to the page
+        setScrollToPage(page);
+      }
     },
-    []
+    [currentFileType]
   );
 
   const handleTranslateText = useCallback(
@@ -685,17 +709,17 @@ export default function App() {
 
   const totalPages = pages.length;
 
-  // Save progress when page changes
+  // Save progress when page changes (works for both PDF and EPUB)
   useEffect(() => {
-    if (docId && pdfDoc && currentPage > 0) {
-      const progress = (currentPage / pdfDoc.numPages) * 100;
+    if (docId && currentPage > 0 && totalPages > 0) {
+      const progress = (currentPage / totalPages) * 100;
       invoke("update_book_progress", {
         id: docId,
         lastPage: currentPage,
         progress: progress,
       }).catch(() => {});
     }
-  }, [docId, pdfDoc, currentPage]);
+  }, [docId, currentPage, totalPages]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -1185,10 +1209,12 @@ export default function App() {
           <section className="pane pane-left">
             {currentFileType === "epub" && epubData ? (
               <EpubViewer
+                ref={epubViewerRef}
                 fileData={epubData}
                 onMetadata={handleEpubMetadata}
                 onParagraphsExtracted={handleEpubParagraphs}
                 onCurrentPageChange={handleEpubPageChange}
+                onLoadingProgress={setLoadingProgress}
                 scale={scale}
               />
             ) : pdfDoc ? (

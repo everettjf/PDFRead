@@ -1,7 +1,5 @@
-import { useMemo, useCallback } from "react";
+import { memo, useCallback } from "react";
 import { Virtuoso } from "react-virtuoso";
-import { createEditor } from "slate";
-import { Slate, Editable, withReact } from "slate-react";
 import * as Popover from "@radix-ui/react-popover";
 import type { PageDoc, Paragraph, WordTranslation } from "../types";
 
@@ -16,15 +14,6 @@ type TranslationPaneProps = {
   wordTranslation: WordTranslation | null;
   onClearWordTranslation: () => void;
   onToggleLikeWord: (word: WordTranslation) => void;
-};
-
-type ParagraphElement = {
-  type: "paragraph";
-  pid: string;
-  source: string;
-  translation?: string;
-  status: Paragraph["status"];
-  children: { text: string }[];
 };
 
 function TranslateIcon() {
@@ -71,55 +60,31 @@ function HeartIcon({ filled }: { filled?: boolean }) {
   );
 }
 
-function PageTranslation({
-  page,
-  activePid,
-  hoverPid,
+// Memoized paragraph component
+const ParagraphBlock = memo(function ParagraphBlock({
+  para,
+  pageNum,
+  isActive,
   onHoverPid,
   onTranslatePid,
   onLocatePid,
   onTranslateText,
 }: {
-  page: PageDoc;
-  activePid?: string | null;
-  hoverPid?: string | null;
+  para: Paragraph;
+  pageNum: number;
+  isActive: boolean;
   onHoverPid: (pid: string | null) => void;
   onTranslatePid: (pid: string) => void;
   onLocatePid: (pid: string, page: number) => void;
   onTranslateText: (text: string, position: { x: number; y: number }) => void;
 }) {
-  const editor = useMemo(() => withReact(createEditor()), []);
-  const value = useMemo(
-    () =>
-      page.paragraphs.map<ParagraphElement>((para) => ({
-        type: "paragraph",
-        pid: para.pid,
-        source: para.source,
-        translation: para.translation,
-        status: para.status,
-        children: [{ text: "" }],
-      })),
-    [page.paragraphs]
-  );
-  const slateKey = useMemo(
-    () =>
-      `${page.page}:${page.paragraphs
-        .map((para) => `${para.pid}:${para.status}:${para.translation ?? ""}`)
-        .join("|")}`,
-    [page.page, page.paragraphs]
-  );
-
   const handleTextInteraction = useCallback(
     (e: React.MouseEvent) => {
-      // Check if there's a text selection
       const selection = window.getSelection();
       if (selection && selection.toString().trim().length > 0) {
-        // User has selected text - don't do anything on click
-        // The selection will be handled by mouseup
         return;
       }
 
-      // Single word click - get the word at click position
       const range = document.caretRangeFromPoint(e.clientX, e.clientY);
       if (!range) return;
 
@@ -129,17 +94,14 @@ function PageTranslation({
       const text = node.textContent || "";
       const offset = range.startOffset;
 
-      // Must click directly on a letter character
       const charAtOffset = text[offset] || "";
       if (!/[a-zA-Z]/.test(charAtOffset)) {
-        // Clicked on whitespace, punctuation, or end of text
         return;
       }
 
       let start = offset;
       let end = offset;
 
-      // Find word boundaries
       while (start > 0 && /[a-zA-Z]/.test(text[start - 1])) {
         start--;
       }
@@ -159,12 +121,10 @@ function PageTranslation({
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
-      // Check if there's a text selection
       const selection = window.getSelection();
       const selectedText = selection?.toString().trim();
 
       if (selectedText && selectedText.length > 0 && selectedText.length < 200) {
-        // User has selected text - show translation
         e.stopPropagation();
         onTranslateText(selectedText, { x: e.clientX, y: e.clientY });
       }
@@ -172,84 +132,109 @@ function PageTranslation({
     [onTranslateText]
   );
 
+  const translationText =
+    para.status === "loading"
+      ? "Translating..."
+      : para.status === "error"
+      ? "Translation failed."
+      : para.translation || "";
+
   return (
-    <div className="translation-page">
-      <div className="translation-page-title">Page {page.page}</div>
-      <Slate key={slateKey} editor={editor} initialValue={value}>
-        <Editable
-          readOnly
-          renderElement={({ attributes, element, children }) => {
-            const para = element as ParagraphElement;
-            const isActive = para.pid === activePid || para.pid === hoverPid;
-            const translationText =
-              para.status === "loading"
-                ? "Translating..."
-                : para.status === "error"
-                ? "Translation failed."
-                : para.translation || "";
-            return (
-              <div
-                {...attributes}
-                className={`paragraph-block ${isActive ? "is-active" : ""}`}
-                onMouseEnter={() => onHoverPid(para.pid)}
-                onMouseLeave={() => onHoverPid(null)}
-              >
-                <div className="paragraph-actions">
-                  <button
-                    className="action-btn locate-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onLocatePid(para.pid, page.page);
-                    }}
-                    title="Locate in PDF"
-                  >
-                    <LocateIcon />
-                  </button>
-                  <button
-                    className="action-btn translate-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTranslatePid(para.pid);
-                    }}
-                    title="Translate paragraph"
-                  >
-                    <TranslateIcon />
-                  </button>
-                </div>
-                <div
-                  className="paragraph-source"
-                  onClick={handleTextInteraction}
-                  onMouseUp={handleMouseUp}
-                >
-                  {para.source}
-                </div>
-                {para.status === "error" ? (
-                  <div className="paragraph-translation paragraph-error">
-                    <span>Translation failed.</span>
-                    <button
-                      className="retry-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onTranslatePid(para.pid);
-                      }}
-                      title="Retry translation"
-                    >
-                      <RetryIcon />
-                      <span>Retry</span>
-                    </button>
-                  </div>
-                ) : translationText ? (
-                  <div className="paragraph-translation">{translationText}</div>
-                ) : null}
-                {children}
-              </div>
-            );
+    <div
+      className={`paragraph-block ${isActive ? "is-active" : ""}`}
+      onMouseEnter={() => onHoverPid(para.pid)}
+      onMouseLeave={() => onHoverPid(null)}
+    >
+      <div className="paragraph-actions">
+        <button
+          className="action-btn locate-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onLocatePid(para.pid, pageNum);
           }}
-        />
-      </Slate>
+          title="Locate in document"
+        >
+          <LocateIcon />
+        </button>
+        <button
+          className="action-btn translate-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onTranslatePid(para.pid);
+          }}
+          title="Translate paragraph"
+        >
+          <TranslateIcon />
+        </button>
+      </div>
+      <div
+        className="paragraph-source"
+        onClick={handleTextInteraction}
+        onMouseUp={handleMouseUp}
+      >
+        {para.source}
+      </div>
+      {para.status === "error" ? (
+        <div className="paragraph-translation paragraph-error">
+          <span>Translation failed.</span>
+          <button
+            className="retry-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onTranslatePid(para.pid);
+            }}
+            title="Retry translation"
+          >
+            <RetryIcon />
+            <span>Retry</span>
+          </button>
+        </div>
+      ) : translationText ? (
+        <div className="paragraph-translation">{translationText}</div>
+      ) : null}
     </div>
   );
-}
+});
+
+// Memoized page component
+const PageTranslation = memo(function PageTranslation({
+  page,
+  activePid,
+  hoverPid,
+  onHoverPid,
+  onTranslatePid,
+  onLocatePid,
+  onTranslateText,
+}: {
+  page: PageDoc;
+  activePid?: string | null;
+  hoverPid?: string | null;
+  onHoverPid: (pid: string | null) => void;
+  onTranslatePid: (pid: string) => void;
+  onLocatePid: (pid: string, page: number) => void;
+  onTranslateText: (text: string, position: { x: number; y: number }) => void;
+}) {
+  // Use page title if available (for EPUB chapters), otherwise show page number
+  const pageTitle = page.title || `Page ${page.page}`;
+
+  return (
+    <div className="translation-page">
+      <div className="translation-page-title">{pageTitle}</div>
+      {page.paragraphs.map((para) => (
+        <ParagraphBlock
+          key={para.pid}
+          para={para}
+          pageNum={page.page}
+          isActive={para.pid === activePid || para.pid === hoverPid}
+          onHoverPid={onHoverPid}
+          onTranslatePid={onTranslatePid}
+          onLocatePid={onLocatePid}
+          onTranslateText={onTranslateText}
+        />
+      ))}
+    </div>
+  );
+});
 
 export function TranslationPane({
   pages,
