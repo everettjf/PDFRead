@@ -32,8 +32,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "shortDescription": "PDF Reader for iPad",
+    "shortDescription": "PDFRead",
     "macOS": {
+      "infoPlist": "./Info.plist",
       "signingIdentity": "3rd Party Mac Developer Application: Feng Zhu (YPV49M8592)",
       "files": {
         "embedded.provisionprofile": "./app.provisionprofile"
