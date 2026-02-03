@@ -13,6 +13,8 @@ export type Paragraph = {
   translation?: string;
   status: "idle" | "loading" | "done" | "error";
   rects: Rect[];
+  epubHref?: string;
+  sectionTitle?: string;
 };
 
 export type PageDoc = {

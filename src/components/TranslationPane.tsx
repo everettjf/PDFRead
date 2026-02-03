@@ -1,5 +1,6 @@
-import { memo, useCallback } from "react";
+import { memo, useCallback, useEffect, useRef } from "react";
 import { Virtuoso } from "react-virtuoso";
+import type { VirtuosoHandle } from "react-virtuoso";
 import * as Popover from "@radix-ui/react-popover";
 import type { PageDoc, Paragraph, WordTranslation } from "../types";
 
@@ -14,6 +15,7 @@ type TranslationPaneProps = {
   wordTranslation: WordTranslation | null;
   onClearWordTranslation: () => void;
   onToggleLikeWord: (word: WordTranslation) => void;
+  scrollToPage?: number | null;
 };
 
 function TranslateIcon() {
@@ -247,10 +249,22 @@ export function TranslationPane({
   wordTranslation,
   onClearWordTranslation,
   onToggleLikeWord,
+  scrollToPage,
 }: TranslationPaneProps) {
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+
+  useEffect(() => {
+    if (!scrollToPage || pages.length === 0) return;
+    const index = pages.findIndex((page) => page.page === scrollToPage);
+    if (index >= 0) {
+      virtuosoRef.current?.scrollToIndex({ index, align: "start", behavior: "smooth" });
+    }
+  }, [pages, scrollToPage]);
+
   return (
     <div className="translation-pane">
       <Virtuoso
+        ref={virtuosoRef}
         style={{ height: "100%" }}
         totalCount={pages.length}
         itemContent={(index) => (

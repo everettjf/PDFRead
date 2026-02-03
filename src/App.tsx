@@ -13,7 +13,7 @@ import * as Toolbar from "@radix-ui/react-toolbar";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { PdfViewer } from "./components/PdfViewer";
 import { TranslationPane } from "./components/TranslationPane";
-import { EpubViewer, type EpubViewerHandle } from "./components/document/EpubViewer";
+import { EpubViewer, type EpubParagraph, type EpubViewerHandle } from "./components/document/EpubViewer";
 import { ChatPanel } from "./components/reader/ChatPanel";
 import { HomeView } from "./views/HomeView";
 import { extractPageParagraphs } from "./lib/textExtraction";
@@ -75,11 +75,13 @@ export default function App() {
   const [apiKeyExists, setApiKeyExists] = useState<boolean>(false);
   const [apiKeyTesting, setApiKeyTesting] = useState<boolean>(false);
   const [scrollToPage, setScrollToPage] = useState<number | null>(null);
+  const [scrollToTranslationPage, setScrollToTranslationPage] = useState<number | null>(null);
   const [wordTranslation, setWordTranslation] = useState<WordTranslation | null>(null);
   const [vocabularyOpen, setVocabularyOpen] = useState(false);
   const [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]);
   const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [epubCurrentHref, setEpubCurrentHref] = useState<string | null>(null);
 
   const pagesRef = useRef<PageDoc[]>([]);
   const textTranslationCacheRef = useRef(new LRUCache<string, string>(100));
@@ -92,6 +94,23 @@ export default function App() {
   const translateQueueRef = useRef<string[]>([]);
 
   const highlightPid = hoverPid ?? activePid;
+  const requestTranslationScroll = useCallback((page: number) => {
+    setScrollToTranslationPage(null);
+    window.requestAnimationFrame(() => {
+      setScrollToTranslationPage(page);
+    });
+  }, []);
+
+  const normalizeHref = useCallback((href: string) => href.split("#")[0], []);
+
+  const matchHref = useCallback(
+    (targetHref: string, sourceHref: string) => {
+      const target = normalizeHref(targetHref);
+      const source = normalizeHref(sourceHref);
+      return target === source || target.endsWith(source) || source.endsWith(target);
+    },
+    [normalizeHref]
+  );
 
   useEffect(() => {
     pagesRef.current = pages;
@@ -148,6 +167,8 @@ export default function App() {
     setPdfDoc(null);
     setPages([]);
     setPageSizes([]);
+    setEpubCurrentHref(null);
+    setScrollToTranslationPage(null);
     translationRequestId.current = 0;
     translatingRef.current = false;
     translateQueueRef.current = [];
@@ -232,6 +253,8 @@ export default function App() {
     setPageSizes([]);
     setLoadingProgress(0);
     setStatusMessage("Loading EPUB...");
+    setEpubCurrentHref(null);
+    setScrollToTranslationPage(null);
     translationRequestId.current = 0;
     translatingRef.current = false;
     translateQueueRef.current = [];
@@ -297,40 +320,67 @@ export default function App() {
     }
   }, [docId, currentFilePath, epubTotalPages]);
 
-  const handleEpubParagraphs = useCallback((paragraphs: any[]) => {
-    // Split EPUB paragraphs into virtual pages (20 paragraphs per page)
+  const handleEpubParagraphs = useCallback((paragraphs: EpubParagraph[]) => {
+    // Split EPUB paragraphs into virtual pages while keeping chapter boundaries
     const PARAGRAPHS_PER_PAGE = 20;
     const epubPages: PageDoc[] = [];
 
-    for (let i = 0; i < paragraphs.length; i += PARAGRAPHS_PER_PAGE) {
-      const pageNum = Math.floor(i / PARAGRAPHS_PER_PAGE) + 1;
-      const pageParagraphs = paragraphs.slice(i, i + PARAGRAPHS_PER_PAGE);
+    let pageNum = 1;
+    let chunk: EpubParagraph[] = [];
+    let chunkHref: string | undefined;
+    let chunkTitle: string | undefined;
 
-      // Use the first paragraph's section title as the page title
-      const firstWithTitle = pageParagraphs.find((p: any) => p.sectionTitle);
-      const pageTitle = firstWithTitle?.sectionTitle;
-
+    const flushChunk = () => {
+      if (chunk.length === 0) return;
       epubPages.push({
         page: pageNum,
-        title: pageTitle, // Chapter/section title for EPUB
-        paragraphs: pageParagraphs.map((p: any) => ({
+        title: chunkTitle,
+        paragraphs: chunk.map((p) => ({
           pid: p.pid,
           page: pageNum,
           source: p.source,
           translation: p.translation,
           status: p.status,
           rects: [],
+          epubHref: p.href,
+          sectionTitle: p.sectionTitle,
         })),
       });
+      pageNum += 1;
+      chunk = [];
+      chunkHref = undefined;
+      chunkTitle = undefined;
+    };
+
+    for (const paragraph of paragraphs) {
+      const nextHref = paragraph.href;
+      const startsNewSection = Boolean(chunkHref && nextHref && !matchHref(chunkHref, nextHref));
+      const chunkFull = chunk.length >= PARAGRAPHS_PER_PAGE;
+      if (startsNewSection || chunkFull) {
+        flushChunk();
+      }
+
+      if (chunk.length === 0) {
+        chunkHref = nextHref;
+        chunkTitle = paragraph.sectionTitle;
+      }
+
+      chunk.push(paragraph);
     }
+
+    flushChunk();
 
     setPages(epubPages);
     setEpubTotalPages(epubPages.length);
-  }, []);
+  }, [matchHref]);
 
   const handleEpubPageChange = useCallback((page: number, total: number) => {
     setCurrentPage(page);
     setEpubTotalPages(total);
+  }, []);
+
+  const handleEpubHrefChange = useCallback((href: string) => {
+    setEpubCurrentHref(href);
   }, []);
 
   const handleOpenFile = useCallback(async () => {
@@ -375,6 +425,8 @@ export default function App() {
     setPageSizes([]);
     setCurrentFilePath(null);
     setChatOpen(false);
+    setEpubCurrentHref(null);
+    setScrollToTranslationPage(null);
   }, [docId, pdfDoc, epubTotalPages, currentPage]);
 
   // Helper functions for chat context
@@ -527,6 +579,7 @@ export default function App() {
   const handleLocatePid = useCallback(
     (pid: string, page: number) => {
       setActivePid(pid);
+      requestTranslationScroll(page);
       if (currentFileType === "epub") {
         // For epub, use the viewer ref to navigate
         epubViewerRef.current?.navigateTo(pid);
@@ -535,7 +588,7 @@ export default function App() {
         setScrollToPage(page);
       }
     },
-    [currentFileType]
+    [currentFileType, requestTranslationScroll]
   );
 
   const handleTranslateText = useCallback(
@@ -707,7 +760,39 @@ export default function App() {
     handleZoomChange(ZOOM_LEVELS[nextIndex]);
   };
 
+  const epubHrefToPage = useMemo(() => {
+    const hrefToPage = new Map<string, number>();
+    for (const page of pages) {
+      for (const paragraph of page.paragraphs) {
+        if (!paragraph.epubHref) continue;
+        const href = normalizeHref(paragraph.epubHref);
+        if (!hrefToPage.has(href)) {
+          hrefToPage.set(href, page.page);
+        }
+      }
+    }
+    return hrefToPage;
+  }, [pages, normalizeHref]);
+
   const totalPages = pages.length;
+
+  useEffect(() => {
+    if (currentFileType !== "epub" || !epubCurrentHref) return;
+
+    const targetHref = normalizeHref(epubCurrentHref);
+    let targetPage = epubHrefToPage.get(targetHref);
+    if (!targetPage) {
+      for (const [href, page] of epubHrefToPage) {
+        if (matchHref(targetHref, href)) {
+          targetPage = page;
+          break;
+        }
+      }
+    }
+    if (targetPage) {
+      requestTranslationScroll(targetPage);
+    }
+  }, [currentFileType, epubCurrentHref, epubHrefToPage, matchHref, normalizeHref, requestTranslationScroll]);
 
   // Save progress when page changes (works for both PDF and EPUB)
   useEffect(() => {
@@ -1215,6 +1300,7 @@ export default function App() {
                 onParagraphsExtracted={handleEpubParagraphs}
                 onCurrentPageChange={handleEpubPageChange}
                 onLoadingProgress={setLoadingProgress}
+                onHrefChange={handleEpubHrefChange}
                 scale={scale}
               />
             ) : pdfDoc ? (
@@ -1247,6 +1333,7 @@ export default function App() {
                 wordTranslation={wordTranslation}
                 onClearWordTranslation={handleClearWordTranslation}
                 onToggleLikeWord={handleToggleLikeWord}
+                scrollToPage={scrollToTranslationPage}
               />
               ) : (
                 <div className="empty-state">Translations will appear here.</div>

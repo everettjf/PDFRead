@@ -3,7 +3,7 @@ import ePub from "epubjs";
 import type { Book, NavItem, Rendition } from "epubjs";
 import * as ScrollArea from "@radix-ui/react-scroll-area";
 
-type EpubParagraph = {
+export type EpubParagraph = {
   pid: string;
   source: string;
   translation?: string;
@@ -18,6 +18,7 @@ type EpubViewerProps = {
   onParagraphsExtracted: (paragraphs: EpubParagraph[]) => void;
   onCurrentPageChange: (page: number, total: number) => void;
   onLoadingProgress?: (progress: number | null) => void;
+  onHrefChange?: (href: string) => void;
   scale: number;
 };
 
@@ -31,6 +32,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
   onParagraphsExtracted,
   onCurrentPageChange,
   onLoadingProgress,
+  onHrefChange,
   scale,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -47,6 +49,22 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
   const onParagraphsExtractedRef = useRef(onParagraphsExtracted);
   const onCurrentPageChangeRef = useRef(onCurrentPageChange);
   const onLoadingProgressRef = useRef(onLoadingProgress);
+  const onHrefChangeRef = useRef(onHrefChange);
+
+  const normalizeHref = useCallback((href: string) => href.split("#")[0], []);
+
+  const matchesHref = useCallback(
+    (locationHref: string, tocHref: string) => {
+      const normalizedLocation = normalizeHref(locationHref);
+      const normalizedToc = normalizeHref(tocHref);
+      return (
+        normalizedLocation === normalizedToc ||
+        normalizedLocation.endsWith(normalizedToc) ||
+        normalizedToc.endsWith(normalizedLocation)
+      );
+    },
+    [normalizeHref]
+  );
 
   useEffect(() => {
     onMetadataRef.current = onMetadata;
@@ -64,12 +82,17 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
     onLoadingProgressRef.current = onLoadingProgress;
   }, [onLoadingProgress]);
 
+  useEffect(() => {
+    onHrefChangeRef.current = onHrefChange;
+  }, [onHrefChange]);
+
   // Expose navigation method via ref
   useImperativeHandle(ref, () => ({
     navigateTo: (pid: string) => {
       const href = paragraphMapRef.current.get(pid);
       if (href && renditionRef.current) {
         renditionRef.current.display(href);
+        onHrefChangeRef.current?.(href);
       }
     },
   }), []);
@@ -143,11 +166,12 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
 
             // Find current chapter using ref for latest value
             const href = location.start.href;
+            if (href) {
+              onHrefChangeRef.current?.(href);
+            }
             const currentToc = tocRef.current;
             const chapter = currentToc.find((item) => {
-              // Handle both full href and partial matches
-              const itemHref = item.href.split("#")[0];
-              return href.includes(itemHref) || itemHref.includes(href);
+              return matchesHref(href, item.href);
             });
             if (chapter) {
               setCurrentChapter(chapter.label);
@@ -199,8 +223,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
     const findSectionTitle = (href: string): string | undefined => {
       const toc = tocRef.current;
       for (const item of toc) {
-        const itemHref = item.href.split("#")[0];
-        if (href.includes(itemHref) || itemHref.includes(href)) {
+        if (matchesHref(href, item.href)) {
           return item.label;
         }
       }
@@ -291,6 +314,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
   const handleTocClick = useCallback((href: string) => {
     if (renditionRef.current) {
       renditionRef.current.display(href);
+      onHrefChangeRef.current?.(href);
     }
   }, []);
 
