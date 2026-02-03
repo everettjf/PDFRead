@@ -81,7 +81,7 @@ export default function App() {
   const [vocabulary, setVocabulary] = useState<VocabularyEntry[]>([]);
   const [loadingProgress, setLoadingProgress] = useState<number | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
-  const [epubCurrentHref, setEpubCurrentHref] = useState<string | null>(null);
+  const [pendingEpubScroll, setPendingEpubScroll] = useState<{ href: string; requestId: number } | null>(null);
 
   const pagesRef = useRef<PageDoc[]>([]);
   const textTranslationCacheRef = useRef(new LRUCache<string, string>(100));
@@ -92,6 +92,7 @@ export default function App() {
   const translatingRef = useRef(false);
   const debounceRef = useRef<number | undefined>(undefined);
   const translateQueueRef = useRef<string[]>([]);
+  const epubScrollRequestIdRef = useRef(0);
 
   const highlightPid = hoverPid ?? activePid;
   const requestTranslationScroll = useCallback((page: number) => {
@@ -167,7 +168,7 @@ export default function App() {
     setPdfDoc(null);
     setPages([]);
     setPageSizes([]);
-    setEpubCurrentHref(null);
+    setPendingEpubScroll(null);
     setScrollToTranslationPage(null);
     translationRequestId.current = 0;
     translatingRef.current = false;
@@ -253,7 +254,7 @@ export default function App() {
     setPageSizes([]);
     setLoadingProgress(0);
     setStatusMessage("Loading EPUB...");
-    setEpubCurrentHref(null);
+    setPendingEpubScroll(null);
     setScrollToTranslationPage(null);
     translationRequestId.current = 0;
     translatingRef.current = false;
@@ -380,7 +381,8 @@ export default function App() {
   }, []);
 
   const handleEpubHrefChange = useCallback((href: string) => {
-    setEpubCurrentHref(href);
+    const requestId = ++epubScrollRequestIdRef.current;
+    setPendingEpubScroll({ href, requestId });
   }, []);
 
   const handleOpenFile = useCallback(async () => {
@@ -425,7 +427,7 @@ export default function App() {
     setPageSizes([]);
     setCurrentFilePath(null);
     setChatOpen(false);
-    setEpubCurrentHref(null);
+    setPendingEpubScroll(null);
     setScrollToTranslationPage(null);
   }, [docId, pdfDoc, epubTotalPages, currentPage]);
 
@@ -777,9 +779,9 @@ export default function App() {
   const totalPages = pages.length;
 
   useEffect(() => {
-    if (currentFileType !== "epub" || !epubCurrentHref) return;
+    if (currentFileType !== "epub" || !pendingEpubScroll) return;
 
-    const targetHref = normalizeHref(epubCurrentHref);
+    const targetHref = normalizeHref(pendingEpubScroll.href);
     let targetPage = epubHrefToPage.get(targetHref);
     if (!targetPage) {
       for (const [href, page] of epubHrefToPage) {
@@ -791,8 +793,11 @@ export default function App() {
     }
     if (targetPage) {
       requestTranslationScroll(targetPage);
+      setPendingEpubScroll((prev) =>
+        prev && prev.requestId === pendingEpubScroll.requestId ? null : prev
+      );
     }
-  }, [currentFileType, epubCurrentHref, epubHrefToPage, matchHref, normalizeHref, requestTranslationScroll]);
+  }, [currentFileType, pendingEpubScroll, epubHrefToPage, matchHref, normalizeHref, requestTranslationScroll]);
 
   // Save progress when page changes (works for both PDF and EPUB)
   useEffect(() => {

@@ -252,12 +252,18 @@ export function TranslationPane({
   scrollToPage,
 }: TranslationPaneProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const lastHandledScrollPageRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!scrollToPage || pages.length === 0) return;
+    if (!scrollToPage) {
+      lastHandledScrollPageRef.current = null;
+      return;
+    }
+    if (lastHandledScrollPageRef.current === scrollToPage || pages.length === 0) return;
     const index = pages.findIndex((page) => page.page === scrollToPage);
     if (index >= 0) {
       virtuosoRef.current?.scrollToIndex({ index, align: "start", behavior: "smooth" });
+      lastHandledScrollPageRef.current = scrollToPage;
     }
   }, [pages, scrollToPage]);
 
