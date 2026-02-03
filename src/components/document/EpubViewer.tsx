@@ -40,6 +40,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
   const renditionRef = useRef<Rendition | null>(null);
   const tocRef = useRef<NavItem[]>([]);
   const paragraphMapRef = useRef<Map<string, string>>(new Map()); // pid -> href
+  const paragraphSourceRef = useRef<Map<string, string>>(new Map()); // pid -> source text
   const [toc, setToc] = useState<NavItem[]>([]);
   const [currentChapter, setCurrentChapter] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -90,8 +91,28 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
   useImperativeHandle(ref, () => ({
     navigateTo: (pid: string) => {
       const href = paragraphMapRef.current.get(pid);
+      const source = paragraphSourceRef.current.get(pid);
       if (href && renditionRef.current) {
-        renditionRef.current.display(href);
+        renditionRef.current.display(href).then(() => {
+          if (!source) return;
+          const normalizedSnippet = source.replace(/\s+/g, " ").trim().toLowerCase().slice(0, 120);
+          if (!normalizedSnippet) return;
+
+          const contentsList = (renditionRef.current as any)?.getContents?.() ?? [];
+          for (const content of contentsList) {
+            const doc = content.document;
+            if (!doc) continue;
+            const nodes = doc.querySelectorAll("p, div, span, li, blockquote, h1, h2, h3, h4, h5, h6");
+            for (const node of nodes) {
+              const text = node.textContent?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+              if (!text || text.length < 20) continue;
+              if (text.includes(normalizedSnippet) || normalizedSnippet.includes(text.slice(0, 120))) {
+                (node as HTMLElement).scrollIntoView({ behavior: "smooth", block: "center" });
+                return;
+              }
+            }
+          }
+        });
         onHrefChangeRef.current?.(href);
       }
     },
@@ -118,6 +139,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
           containerRef.current.innerHTML = "";
         }
         paragraphMapRef.current.clear();
+        paragraphSourceRef.current.clear();
 
         // Create book from array buffer
         const book = ePub(fileData.buffer);
@@ -284,6 +306,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(function
               });
               // Store mapping for navigation
               paragraphMapRef.current.set(pid, item.href);
+              paragraphSourceRef.current.set(pid, text);
             }
           }
         } catch (itemError) {
