@@ -6,9 +6,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as Label from "@radix-ui/react-label";
-import * as Popover from "@radix-ui/react-popover";
 import * as Select from "@radix-ui/react-select";
 import * as ScrollArea from "@radix-ui/react-scroll-area";
+import * as Tabs from "@radix-ui/react-tabs";
 import * as Toolbar from "@radix-ui/react-toolbar";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { PdfViewer } from "./components/PdfViewer";
@@ -66,9 +66,9 @@ export default function App() {
   const [activePid, setActivePid] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>("Open a document to get started.");
   const [viewMode, setViewMode] = useState<"split" | "pdf" | "translation">("split");
-  const [languageOpen, setLanguageOpen] = useState(false);
-  const [languageQuery, setLanguageQuery] = useState("");
+  const [languageListOpen, setLanguageListOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"translation" | "appearance" | "api">("appearance");
   const [apiKeyInput, setApiKeyInput] = useState<string>("");
   const [apiKeyStatus, setApiKeyStatus] = useState<string>("");
   const [apiKeySaving, setApiKeySaving] = useState<boolean>(false);
@@ -93,6 +93,7 @@ export default function App() {
   const debounceRef = useRef<number | undefined>(undefined);
   const translateQueueRef = useRef<string[]>([]);
   const epubScrollRequestIdRef = useRef(0);
+  const settingsTabsRef = useRef<HTMLDivElement | null>(null);
 
   const highlightPid = hoverPid ?? activePid;
   const requestTranslationScroll = useCallback((page: number) => {
@@ -152,6 +153,8 @@ export default function App() {
 
   useEffect(() => {
     if (!settingsOpen) return;
+    setSettingsTab("appearance");
+    setLanguageListOpen(false);
     setApiKeyStatus("");
     invoke<{ exists: boolean }>("get_openrouter_key_info")
       .then((info) => setApiKeyExists(info.exists))
@@ -738,22 +741,6 @@ export default function App() {
     return index >= 0 ? index : ZOOM_LEVELS.indexOf(1);
   }, [scale]);
 
-  const targetPreset = useMemo(
-    () => LANGUAGE_PRESETS.find((item) => item.code === settings.targetLanguage.code),
-    [settings.targetLanguage.code]
-  );
-  const languageTriggerLabel = targetPreset
-    ? `${targetPreset.label} (${targetPreset.code})`
-    : `Custom (${settings.targetLanguage.code || "code"})`;
-  const filteredLanguages = useMemo(() => {
-    const query = languageQuery.trim().toLowerCase();
-    if (!query) return LANGUAGE_PRESETS;
-    return LANGUAGE_PRESETS.filter(
-      (item) =>
-        item.label.toLowerCase().includes(query) || item.code.toLowerCase().includes(query)
-    );
-  }, [languageQuery]);
-
   const handleScaleStep = (direction: "in" | "out") => {
     const nextIndex =
       direction === "in"
@@ -761,6 +748,20 @@ export default function App() {
         : Math.max(0, currentScaleIndex - 1);
     handleZoomChange(ZOOM_LEVELS[nextIndex]);
   };
+
+  const handleSettingsTabChange = useCallback((value: string) => {
+    const nextTab = value as "translation" | "appearance" | "api";
+    setSettingsTab(nextTab);
+    if (nextTab !== "translation") {
+      setLanguageListOpen(false);
+    }
+    window.requestAnimationFrame(() => {
+      const activeContent = settingsTabsRef.current?.querySelector<HTMLElement>(
+        ".settings-content[data-state='active']"
+      );
+      activeContent?.scrollTo({ top: 0, behavior: "auto" });
+    });
+  }, []);
 
   const epubHrefToPage = useMemo(() => {
     const hrefToPage = new Map<string, number>();
@@ -990,212 +991,231 @@ export default function App() {
                 <Dialog.Description className="dialog-description">
                   Configure translation preferences and appearance.
                 </Dialog.Description>
-                <div className="settings-content">
-                  {/* Appearance Section */}
-                  <div className="settings-section">
-                    <div className="settings-section-header">
-                      <span className="settings-section-icon">🎨</span>
-                      <span>Appearance</span>
-                    </div>
-                    <div className="settings-item">
-                      <Label.Root className="settings-label" htmlFor="theme-select">
-                        Theme
-                      </Label.Root>
-                      <Select.Root
-                        value={settings.theme}
-                        onValueChange={(value) =>
-                          setSettings((prev) => ({
-                            ...prev,
-                            theme: value as TranslationSettings["theme"],
-                          }))
-                        }
-                      >
-                        <Select.Trigger className="select-trigger" id="theme-select">
-                          <Select.Value />
-                        </Select.Trigger>
-                        <Select.Content className="select-content" position="popper">
-                          <Select.Item value="system" className="select-item">
-                            <Select.ItemText>System</Select.ItemText>
-                          </Select.Item>
-                          <Select.Item value="light" className="select-item">
-                            <Select.ItemText>Light</Select.ItemText>
-                          </Select.Item>
-                          <Select.Item value="dark" className="select-item">
-                            <Select.ItemText>Dark</Select.ItemText>
-                          </Select.Item>
-                        </Select.Content>
-                      </Select.Root>
-                      <span className="settings-hint">Choose your preferred color scheme</span>
-                    </div>
-                  </div>
+                <Tabs.Root
+                  ref={settingsTabsRef}
+                  className="settings-tabs"
+                  value={settingsTab}
+                  onValueChange={handleSettingsTabChange}
+                >
+                  <Tabs.List className="settings-tabs-list" aria-label="Settings sections">
+                    <Tabs.Trigger className="settings-tab-trigger" value="translation">
+                      Translation
+                    </Tabs.Trigger>
+                    <Tabs.Trigger className="settings-tab-trigger" value="appearance">
+                      Appearance
+                    </Tabs.Trigger>
+                    <Tabs.Trigger className="settings-tab-trigger" value="api">
+                      API
+                    </Tabs.Trigger>
+                  </Tabs.List>
 
-                  {/* Translation Section */}
-                  <div className="settings-section">
-                    <div className="settings-section-header">
-                      <span className="settings-section-icon">🌐</span>
-                      <span>Translation</span>
-                    </div>
-                    <div className="settings-item">
-                      <Label.Root className="settings-label" htmlFor="target-language">
-                        Target Language
-                      </Label.Root>
-                      <Popover.Root open={languageOpen} onOpenChange={setLanguageOpen}>
-                        <Popover.Trigger asChild>
-                          <button className="select-trigger" type="button" id="target-language">
-                            {languageTriggerLabel}
-                          </button>
-                        </Popover.Trigger>
-                        <Popover.Portal>
-                          <Popover.Content className="popover-content" sideOffset={8}>
-                            <div className="popover-title">Choose or search</div>
-                            <input
-                              className="input popover-input"
-                              placeholder="Search language or code..."
-                              value={languageQuery}
-                              onChange={(event) => setLanguageQuery(event.target.value)}
-                            />
-                            <ScrollArea.Root className="popover-scroll">
-                              <ScrollArea.Viewport className="popover-list">
-                                {filteredLanguages.map((preset) => (
-                                  <button
-                                    key={preset.code}
-                                    className={`popover-item ${
-                                      preset.code === settings.targetLanguage.code ? "is-selected" : ""
-                                    }`}
-                                    type="button"
-                                    onClick={() => {
-                                      setSettings((prev) => ({
-                                        ...prev,
-                                        targetLanguage: { label: preset.label, code: preset.code },
-                                      }));
-                                      setLanguageOpen(false);
-                                    }}
-                                  >
-                                    <span>{preset.label}</span>
-                                    <span className="popover-code">{preset.code}</span>
-                                  </button>
-                                ))}
-                                {filteredLanguages.length === 0 ? (
-                                  <div className="popover-empty">
-                                    No matches. Edit below for custom.
-                                  </div>
-                                ) : null}
-                              </ScrollArea.Viewport>
-                              <ScrollArea.Scrollbar orientation="vertical" className="scrollbar">
-                                <ScrollArea.Thumb className="scrollbar-thumb" />
-                              </ScrollArea.Scrollbar>
-                            </ScrollArea.Root>
-                            <div className="popover-hint">Custom values can be edited below.</div>
-                            <Popover.Arrow className="popover-arrow" />
-                          </Popover.Content>
-                        </Popover.Portal>
-                      </Popover.Root>
-                      <span className="settings-hint">Language for translations</span>
-                    </div>
-                    <div className="settings-item">
-                      <Label.Root className="settings-label" htmlFor="model-input">
-                        Model
-                      </Label.Root>
-                      <input
-                        id="model-input"
-                        className="input"
-                        value={settings.model}
-                        onChange={(event) =>
-                          setSettings((prev) => ({ ...prev, model: event.target.value }))
-                        }
-                      />
-                      <span className="settings-hint">e.g. openai/gpt-4o-mini, anthropic/claude-3-haiku</span>
-                    </div>
-                  </div>
-
-                  {/* API Configuration Section */}
-                  <div className="settings-section">
-                    <div className="settings-section-header">
-                      <span className="settings-section-icon">🔑</span>
-                      <span>API Configuration</span>
-                    </div>
-                    <div className="settings-item">
-                      <Label.Root className="settings-label" htmlFor="api-key-input">
-                        OpenRouter API Key
-                      </Label.Root>
-                      <div className="api-key-row">
+                  <Tabs.Content className="settings-content" value="translation">
+                    <div className="settings-section">
+                      <div className="settings-section-header">
+                        <span className="settings-section-icon">🌐</span>
+                        <span>Translation</span>
+                      </div>
+                      <div className="settings-item">
+                        <Label.Root className="settings-label">Target Language</Label.Root>
+                        <button
+                          type="button"
+                          className="settings-language-toggle"
+                          onClick={() => setLanguageListOpen((prev) => !prev)}
+                        >
+                          {languageListOpen ? "Hide language presets" : "Choose from presets"}
+                        </button>
+                        {languageListOpen ? (
+                            <ScrollArea.Root className="settings-language-scroll">
+                              <ScrollArea.Viewport className="settings-language-list">
+                              {LANGUAGE_PRESETS.map((preset) => (
+                                <button
+                                  key={preset.code}
+                                  className={`settings-language-item ${
+                                    preset.code === settings.targetLanguage.code ? "is-selected" : ""
+                                  }`}
+                                  type="button"
+                                  onClick={() => {
+                                    setSettings((prev) => ({
+                                      ...prev,
+                                      targetLanguage: { label: preset.label, code: preset.code },
+                                    }));
+                                    setLanguageListOpen(false);
+                                  }}
+                                >
+                                  <span>{preset.label}</span>
+                                </button>
+                              ))}
+                            </ScrollArea.Viewport>
+                            <ScrollArea.Scrollbar orientation="vertical" className="scrollbar">
+                              <ScrollArea.Thumb className="scrollbar-thumb" />
+                            </ScrollArea.Scrollbar>
+                          </ScrollArea.Root>
+                        ) : null}
+                        <span className="settings-hint">
+                          Selected: {settings.targetLanguage.label}
+                        </span>
+                      </div>
+                      <div className="settings-item">
+                        <Label.Root className="settings-label" htmlFor="language-label-input">
+                          Language Label
+                        </Label.Root>
                         <input
-                          id="api-key-input"
+                          id="language-label-input"
                           className="input"
-                          type="password"
-                          placeholder="sk-or-..."
-                          value={apiKeyInput}
-                          onChange={(event) => setApiKeyInput(event.target.value)}
+                          value={settings.targetLanguage.label}
+                          onChange={(event) =>
+                            setSettings((prev) => ({
+                              ...prev,
+                              targetLanguage: { ...prev.targetLanguage, label: event.target.value },
+                            }))
+                          }
                         />
-                        <button
-                          className="btn"
-                          type="button"
-                          disabled={apiKeySaving}
-                          onClick={async () => {
-                            if (!apiKeyInput.trim()) {
-                              setApiKeyStatus("Please enter an API key.");
-                              return;
-                            }
-                            setApiKeySaving(true);
-                            setApiKeyStatus("");
-                            try {
-                              await invoke("save_openrouter_key", { key: apiKeyInput });
-                              setApiKeyStatus("Saved. Key stored locally.");
-                              setApiKeyInput("");
-                              const info = await invoke<{ exists: boolean }>("get_openrouter_key_info");
-                              setApiKeyExists(info.exists);
-                            } catch (error) {
-                              const message = String(error);
-                              setApiKeyStatus(message ? `Failed to save key: ${message}` : "Failed to save key.");
-                            } finally {
-                              setApiKeySaving(false);
-                            }
-                          }}
-                        >
-                          Save
-                        </button>
-                        <button
-                          className="btn"
-                          type="button"
-                          disabled={apiKeyTesting}
-                          onClick={async () => {
-                            setApiKeyTesting(true);
-                            setApiKeyStatus("");
-                            try {
-                              await invoke("test_openrouter_key");
-                              setApiKeyStatus("Connection OK.");
-                            } catch (error) {
-                              const message = String(error);
-                              setApiKeyStatus(
-                                message ? `Connection failed: ${message}` : "Connection failed."
-                              );
-                            } finally {
-                              setApiKeyTesting(false);
-                            }
-                          }}
-                        >
-                          Test
-                        </button>
                       </div>
-                      <div className="api-key-status">
-                        {apiKeyExists ? (
-                          <span className="status-ok">Key saved</span>
-                        ) : (
-                          <span className="status-warn">No key saved yet</span>
-                        )}
-                        {apiKeyStatus && <span className="status-message">{apiKeyStatus}</span>}
+                      <div className="settings-item">
+                        <Label.Root className="settings-label" htmlFor="model-input">
+                          Model
+                        </Label.Root>
+                        <input
+                          id="model-input"
+                          className="input"
+                          value={settings.model}
+                          onChange={(event) =>
+                            setSettings((prev) => ({ ...prev, model: event.target.value }))
+                          }
+                        />
+                        <span className="settings-hint">e.g. openai/gpt-4o-mini, anthropic/claude-3-haiku</span>
                       </div>
-                      <a
-                        href="https://openrouter.ai/keys"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="settings-link"
-                      >
-                        Get API Key →
-                      </a>
                     </div>
-                  </div>
-                </div>
+                  </Tabs.Content>
+
+                  <Tabs.Content className="settings-content" value="appearance">
+                    <div className="settings-section">
+                      <div className="settings-section-header">
+                        <span className="settings-section-icon">🎨</span>
+                        <span>Appearance</span>
+                      </div>
+                      <div className="settings-item">
+                        <Label.Root className="settings-label" htmlFor="theme-select">
+                          Theme
+                        </Label.Root>
+                        <Select.Root
+                          value={settings.theme}
+                          onValueChange={(value) =>
+                            setSettings((prev) => ({
+                              ...prev,
+                              theme: value as TranslationSettings["theme"],
+                            }))
+                          }
+                        >
+                          <Select.Trigger className="select-trigger" id="theme-select">
+                            <Select.Value />
+                          </Select.Trigger>
+                          <Select.Content className="select-content" position="popper">
+                            <Select.Item value="system" className="select-item">
+                              <Select.ItemText>System</Select.ItemText>
+                            </Select.Item>
+                            <Select.Item value="light" className="select-item">
+                              <Select.ItemText>Light</Select.ItemText>
+                            </Select.Item>
+                            <Select.Item value="dark" className="select-item">
+                              <Select.ItemText>Dark</Select.ItemText>
+                            </Select.Item>
+                          </Select.Content>
+                        </Select.Root>
+                        <span className="settings-hint">Choose your preferred color scheme</span>
+                      </div>
+                    </div>
+                  </Tabs.Content>
+
+                  <Tabs.Content className="settings-content" value="api">
+                    <div className="settings-section">
+                      <div className="settings-section-header">
+                        <span className="settings-section-icon">🔑</span>
+                        <span>API Configuration</span>
+                      </div>
+                      <div className="settings-item">
+                        <Label.Root className="settings-label" htmlFor="api-key-input">
+                          OpenRouter API Key
+                        </Label.Root>
+                        <div className="api-key-row">
+                          <input
+                            id="api-key-input"
+                            className="input"
+                            type="password"
+                            placeholder="sk-or-..."
+                            value={apiKeyInput}
+                            onChange={(event) => setApiKeyInput(event.target.value)}
+                          />
+                          <button
+                            className="btn"
+                            type="button"
+                            disabled={apiKeySaving}
+                            onClick={async () => {
+                              if (!apiKeyInput.trim()) {
+                                setApiKeyStatus("Please enter an API key.");
+                                return;
+                              }
+                              setApiKeySaving(true);
+                              setApiKeyStatus("");
+                              try {
+                                await invoke("save_openrouter_key", { key: apiKeyInput });
+                                setApiKeyStatus("Saved. Key stored locally.");
+                                setApiKeyInput("");
+                                const info = await invoke<{ exists: boolean }>("get_openrouter_key_info");
+                                setApiKeyExists(info.exists);
+                              } catch (error) {
+                                const message = String(error);
+                                setApiKeyStatus(message ? `Failed to save key: ${message}` : "Failed to save key.");
+                              } finally {
+                                setApiKeySaving(false);
+                              }
+                            }}
+                          >
+                            Save
+                          </button>
+                          <button
+                            className="btn"
+                            type="button"
+                            disabled={apiKeyTesting}
+                            onClick={async () => {
+                              setApiKeyTesting(true);
+                              setApiKeyStatus("");
+                              try {
+                                await invoke("test_openrouter_key");
+                                setApiKeyStatus("Connection OK.");
+                              } catch (error) {
+                                const message = String(error);
+                                setApiKeyStatus(
+                                  message ? `Connection failed: ${message}` : "Connection failed."
+                                );
+                              } finally {
+                                setApiKeyTesting(false);
+                              }
+                            }}
+                          >
+                            Test
+                          </button>
+                        </div>
+                        <div className="api-key-status">
+                          {apiKeyExists ? (
+                            <span className="status-ok">Key saved</span>
+                          ) : (
+                            <span className="status-warn">No key saved yet</span>
+                          )}
+                          {apiKeyStatus && <span className="status-message">{apiKeyStatus}</span>}
+                        </div>
+                        <a
+                          href="https://openrouter.ai/keys"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="settings-link"
+                        >
+                          Get API Key →
+                        </a>
+                      </div>
+                    </div>
+                  </Tabs.Content>
+                </Tabs.Root>
                 <Dialog.Close asChild>
                   <button className="btn btn-primary">Done</button>
                 </Dialog.Close>

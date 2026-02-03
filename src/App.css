@@ -853,16 +853,56 @@ body {
 }
 
 .dialog-content-settings {
-  width: min(520px, 90vw);
-  max-height: 85vh;
-  overflow-y: auto;
+  width: min(640px, 92vw);
+  height: min(620px, 84vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.settings-tabs-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-tab-trigger {
+  border: 1px solid var(--border);
+  background: var(--panel-muted);
+  color: var(--ink-muted);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-tab-trigger[data-state="active"] {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  background: var(--accent-muted);
 }
 
 .settings-content {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-bottom: 20px;
+  display: block;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settings-content[data-state="inactive"] {
+  display: none;
 }
 
 .settings-section {
@@ -910,6 +950,76 @@ body {
 .settings-hint {
   font-size: 11px;
   color: var(--ink-muted);
+}
+
+.settings-language-scroll {
+  height: 180px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.settings-language-scroll [data-radix-scroll-area-viewport] {
+  height: 100%;
+}
+
+.settings-language-list {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-language-item {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--panel-muted);
+  color: var(--ink);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.settings-language-item:hover {
+  border-color: var(--accent);
+}
+
+.settings-language-item.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.settings-language-code {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.settings-language-empty {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--panel-muted);
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+.settings-language-toggle {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-language-toggle:hover {
+  border-color: var(--accent);
 }
 
 .api-key-row {
