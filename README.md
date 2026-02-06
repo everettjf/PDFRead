@@ -1,4 +1,15 @@
-# Tauri + React + Typescript
+# PDFRead
+
+## Install (Homebrew)
+
+```bash
+brew tap everettjf/tap
+brew install --cask pdfread
+```
+
+## Develop
+
+### Tauri + React + Typescript
 
 This template should help get you started developing with Tauri, React and Typescript in Vite.
 
