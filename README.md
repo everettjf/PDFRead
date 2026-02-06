@@ -1,5 +1,16 @@
 # PDFRead
 
+A Tauri desktop PDF bilingual reader with sentence-level alignment and translation.
+
+![PDFRead App Icon](./appicon.png)
+
+## Highlights
+
+- Two-column layout: PDF on the left, translations and controls on the right.
+- Sentence-level translation with alignment highlights on the PDF.
+- Local cache for translations, powered by OpenRouter via the Rust backend.
+- Smooth scrolling and virtualization for long documents.
+
 ## Install (Homebrew)
 
 ```bash
@@ -9,10 +20,23 @@ brew install --cask pdfread
 
 ## Develop
 
-### Tauri + React + Typescript
+### Tauri + React + TypeScript
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+```bash
+bun install
+bun run tauri dev
+```
+
+### Build
+
+```bash
+bun run build
+```
 
 ## Recommended IDE Setup
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- VS Code + Tauri extension + rust-analyzer
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=everettjf/PDFRead&type=Date)](https://star-history.com/#everettjf/PDFRead&Date)
