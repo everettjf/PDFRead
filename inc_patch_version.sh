@@ -1,30 +1,31 @@
 #!/bin/bash
+set -euo pipefail
 
-# Get current version from package.json
-CURRENT_VERSION=$(grep '"version"' package.json | head -1 | sed 's/.*"version": "\([^"]*\)".*/\1/')
+ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$ROOT_DIR"
 
-# Parse version components
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+if ! command -v node >/dev/null 2>&1; then
+  echo "Missing required command: node" >&2
+  exit 1
+fi
 
-# Increment patch
-NEW_PATCH=$((PATCH + 1))
-NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+CURRENT_VERSION=$(node -p "require('$ROOT_DIR/package.json').version")
+NEW_VERSION=$(node -e "
+const fs = require('fs');
+const path = '$ROOT_DIR/package.json';
+const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+const parts = pkg.version.split('.').map(Number);
+if (parts.length !== 3 || parts.some(Number.isNaN)) {
+  throw new Error('Invalid package.json version: ' + pkg.version);
+}
+parts[2] += 1;
+pkg.version = parts.join('.');
+fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\\n');
+console.log(pkg.version);
+")
 
 echo "Bumping version: $CURRENT_VERSION -> $NEW_VERSION"
-
-# Update package.json
-sed -i '' "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" package.json
-
-# Update Cargo.toml
 sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" src-tauri/Cargo.toml
-
-# Update tauri.conf.json
 sed -i '' "s/\"version\": \"$CURRENT_VERSION\"/\"version\": \"$NEW_VERSION\"/" src-tauri/tauri.conf.json
 
-# Add tag to git
-git tag $NEW_VERSION
-git push --tags
-
-
-
-echo "Done!"
+echo "Done. Updated version files only (no git tag/push)."

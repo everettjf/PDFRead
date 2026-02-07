@@ -3,10 +3,65 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 REPO_DIR="$ROOT_DIR"
+TAURI_CONFIG="$REPO_DIR/src-tauri/tauri.conf.json"
+TAURI_HOME_BREW_CONFIG="$REPO_DIR/src-tauri/tauri.conf.homebrew.json"
 TAP_DIR_DEFAULT="$ROOT_DIR/../homebrew-tap"
 TAP_DIR="${TAP_DIR:-$TAP_DIR_DEFAULT}"
 TAP_REPO="everettjf/homebrew-tap"
 CASK_PATH="Casks/pdfread.rb"
+SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application: Feng Zhu (YPV49M8592)}"
+NOTARYTOOL_PROFILE="${NOTARYTOOL_PROFILE:-}"
+APPLE_ID="${APPLE_ID:-}"
+APPLE_TEAM_ID="${APPLE_TEAM_ID:-}"
+APPLE_APP_SPECIFIC_PASSWORD="${APPLE_APP_SPECIFIC_PASSWORD:-${APPLE_PASSWORD:-${APP_SPECIFIC_PASSWORD:-}}}"
+VERSION_FILES=("package.json" "src-tauri/Cargo.toml" "src-tauri/tauri.conf.json")
+SKIP_BUMP="${SKIP_BUMP:-0}"
+
+read_version() {
+  node -p "require('$REPO_DIR/package.json').version"
+}
+
+bump_patch_version() {
+  node -e "
+const fs = require('fs');
+const path = '$REPO_DIR/package.json';
+const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+const parts = pkg.version.split('.').map(Number);
+if (parts.length !== 3 || parts.some(Number.isNaN)) {
+  throw new Error('Invalid package.json version: ' + pkg.version);
+}
+parts[2] += 1;
+pkg.version = parts.join('.');
+fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\\n');
+console.log(pkg.version);
+"
+}
+
+update_tauri_version() {
+  local old_version="$1"
+  local new_version="$2"
+  sed -i '' "s/^version = \"$old_version\"/version = \"$new_version\"/" "$REPO_DIR/src-tauri/Cargo.toml"
+  sed -i '' "s/\"version\": \"$old_version\"/\"version\": \"$new_version\"/" "$REPO_DIR/src-tauri/tauri.conf.json"
+}
+
+create_homebrew_tauri_config() {
+  local output_path="$1"
+  local source_config="$TAURI_CONFIG"
+  if [ -f "$TAURI_HOME_BREW_CONFIG" ]; then
+    source_config="$TAURI_HOME_BREW_CONFIG"
+  fi
+  SOURCE_CONFIG="$source_config" OUTPUT_CONFIG="$output_path" SIGNING_IDENTITY="$SIGNING_IDENTITY" node -e '
+const fs = require("fs");
+const source = process.env.SOURCE_CONFIG;
+const output = process.env.OUTPUT_CONFIG;
+const signingIdentity = process.env.SIGNING_IDENTITY;
+const conf = JSON.parse(fs.readFileSync(source, "utf8"));
+if (!conf.bundle) conf.bundle = {};
+if (!conf.bundle.macOS) conf.bundle.macOS = {};
+conf.bundle.macOS.signingIdentity = signingIdentity;
+fs.writeFileSync(output, JSON.stringify(conf, null, 2) + "\n");
+'
+}
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -19,27 +74,96 @@ require_cmd bun
 require_cmd git
 require_cmd gh
 require_cmd shasum
+require_cmd node
+require_cmd security
+require_cmd xcrun
+require_cmd codesign
+require_cmd spctl
 
 if ! gh auth status >/dev/null 2>&1; then
   echo "GitHub CLI not authenticated. Run: gh auth login" >&2
   exit 1
 fi
 
+if [ ! -f "$TAURI_CONFIG" ]; then
+  echo "Missing config: $TAURI_CONFIG" >&2
+  exit 1
+fi
+
+if ! security find-identity -v -p codesigning | grep -Fq "\"$SIGNING_IDENTITY\""; then
+  cat >&2 <<EOF
+Signing identity not available in keychain:
+  $SIGNING_IDENTITY
+
+Available code signing identities:
+$(security find-identity -v -p codesigning | sed 's/^/  /')
+EOF
+  exit 1
+fi
+
+if [ -z "$NOTARYTOOL_PROFILE" ] && { [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_APP_SPECIFIC_PASSWORD" ]; }; then
+  cat >&2 <<EOF
+Notarization credentials missing.
+Set one of:
+  1) NOTARYTOOL_PROFILE=<keychain-profile-name>
+  2) APPLE_ID + APPLE_TEAM_ID + APPLE_APP_SPECIFIC_PASSWORD
+EOF
+  exit 1
+fi
+
 cd "$REPO_DIR"
 
-./inc_patch_version.sh
+if [ "$SKIP_BUMP" != "1" ] && ! git diff --quiet -- "${VERSION_FILES[@]}"; then
+  echo "Version files have local changes. Commit or stash them first:" >&2
+  printf '  %s\n' "${VERSION_FILES[@]}" >&2
+  exit 1
+fi
 
-VERSION=$(bun -e "console.log(require('./package.json').version)")
+VERSION=$(read_version)
 TAG="v$VERSION"
+DID_BUMP=0
 
-bun run tauri build
+if [ "$SKIP_BUMP" = "1" ]; then
+  echo "SKIP_BUMP=1, publishing current version: $VERSION"
+else
+  OLD_VERSION="$VERSION"
+  NEW_VERSION=$(bump_patch_version)
+  update_tauri_version "$OLD_VERSION" "$NEW_VERSION"
+
+  VERSION=$(read_version)
+  if [ "$VERSION" != "$NEW_VERSION" ]; then
+    echo "Version mismatch after bump: expected $NEW_VERSION, got $VERSION" >&2
+    exit 1
+  fi
+  DID_BUMP=1
+fi
+
+TAG="v$VERSION"
+if [ "$SKIP_BUMP" != "1" ] && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+  echo "Tag already exists: $TAG" >&2
+  exit 1
+fi
+
+if ! git diff --quiet -- "${VERSION_FILES[@]}"; then
+  echo "Version files updated to $VERSION"
+fi
+
+TMP_CONFIG="$REPO_DIR/src-tauri/tauri.conf.homebrew.generated.json"
+RELEASE_DONE=0
+cleanup() {
+  rm -f "$TMP_CONFIG"
+  if [ "$RELEASE_DONE" -eq 0 ] && [ "$DID_BUMP" -eq 1 ]; then
+    git checkout -- "${VERSION_FILES[@]}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+create_homebrew_tauri_config "$TMP_CONFIG"
+APPLE_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" bun run tauri build --config "$TMP_CONFIG"
 
 DMG_PATH=$(ls -t "src-tauri/target/release/bundle/dmg/PDFRead_${VERSION}_"*.dmg 2>/dev/null | head -1 || true)
 if [ -z "$DMG_PATH" ]; then
-  DMG_PATH=$(ls -t src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1 || true)
-fi
-if [ -z "$DMG_PATH" ]; then
-  echo "No .dmg found at src-tauri/target/release/bundle/dmg/" >&2
+  echo "No versioned .dmg found for $VERSION at src-tauri/target/release/bundle/dmg/" >&2
   exit 1
 fi
 
@@ -49,6 +173,39 @@ if [ "$(basename "$DMG_PATH")" != "PDFRead.dmg" ]; then
   cp -f "$DMG_PATH" "$RELEASE_DMG_PATH"
 else
   RELEASE_DMG_PATH="$DMG_PATH"
+fi
+
+echo "Submitting DMG for notarization..."
+if [ -n "$NOTARYTOOL_PROFILE" ]; then
+  xcrun notarytool submit "$RELEASE_DMG_PATH" --keychain-profile "$NOTARYTOOL_PROFILE" --wait
+else
+  xcrun notarytool submit "$RELEASE_DMG_PATH" \
+    --apple-id "$APPLE_ID" \
+    --team-id "$APPLE_TEAM_ID" \
+    --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+    --wait
+fi
+
+echo "Stapling notarization ticket..."
+xcrun stapler staple "$RELEASE_DMG_PATH"
+xcrun stapler validate "$RELEASE_DMG_PATH"
+
+echo "Verifying app signature and Gatekeeper assessment..."
+APP_PATH=$(ls -td src-tauri/target/release/bundle/macos/*.app 2>/dev/null | head -1 || true)
+if [ -z "$APP_PATH" ]; then
+  echo "No .app found at src-tauri/target/release/bundle/macos/" >&2
+  exit 1
+fi
+
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+spctl --assess -vv "$APP_PATH"
+
+if [ "$DID_BUMP" -eq 1 ]; then
+  git add "${VERSION_FILES[@]}"
+  git commit -m "new version: $VERSION"
+  git push
+  git tag "$TAG"
+  git push origin "$TAG"
 fi
 
 RELEASE_ASSETS=("$RELEASE_DMG_PATH")
@@ -82,4 +239,5 @@ git add "$CASK_PATH"
 git commit -m "bump pdfread to $VERSION"
 git push
 
+RELEASE_DONE=1
 echo "Done. Released $TAG and updated Homebrew cask."
