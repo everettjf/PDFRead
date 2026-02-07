@@ -42,6 +42,9 @@
       "entitlements": "./Entitlements.plist",
       "minimumSystemVersion": "15.0"
     },
-    "category": "Utility"
+    "category": "Utility",
+    "iOS": {
+      "infoPlist": "Info.iOS.plist"
+    }
   }
 }
