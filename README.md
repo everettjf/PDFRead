@@ -28,8 +28,7 @@ Reading technical PDFs in another language is slow. PDFRead keeps the original P
 ## Install (Homebrew)
 
 ```bash
-brew tap everettjf/tap
-brew install --cask pdfread
+brew update && brew tap everettjf/tap && brew install --cask reporead
 ```
 
 ## Develop

@@ -62,8 +62,7 @@ Read PDFs and see sentence‑level translations side‑by‑side, instantly.
 
 ## Installation (for the landing page)
 ```bash
-brew tap everettjf/tap
-brew install --cask pdfread
+brew update && brew tap everettjf/tap && brew install --cask reporead
 ```
 
 ## Short App Description (for cards)
