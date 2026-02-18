@@ -5,8 +5,8 @@ ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
 REPO_DIR="$ROOT_DIR"
 TAURI_CONFIG="$REPO_DIR/src-tauri/tauri.conf.json"
 TAURI_HOME_BREW_CONFIG="$REPO_DIR/src-tauri/tauri.conf.homebrew.json"
-TAP_DIR_DEFAULT="$ROOT_DIR/../homebrew-tap"
-TAP_DIR="${TAP_DIR:-$TAP_DIR_DEFAULT}"
+TMP_DIR="$ROOT_DIR/tmp"
+TAP_DIR="$TMP_DIR/homebrew-tap"
 TAP_REPO="everettjf/homebrew-tap"
 CASK_PATH="Casks/pdfread.rb"
 SIGNING_IDENTITY="${SIGNING_IDENTITY:-Developer ID Application: Feng Zhu (YPV49M8592)}"
@@ -75,6 +75,7 @@ require_cmd git
 require_cmd gh
 require_cmd shasum
 require_cmd node
+require_cmd cargo
 require_cmd security
 require_cmd xcrun
 require_cmd codesign
@@ -159,6 +160,8 @@ cleanup() {
 trap cleanup EXIT
 
 create_homebrew_tauri_config "$TMP_CONFIG"
+echo "Cleaning Rust build artifacts to force a fresh build..."
+cargo clean --manifest-path "$REPO_DIR/src-tauri/Cargo.toml"
 APPLE_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" bun run tauri build --config "$TMP_CONFIG"
 
 DMG_PATH=$(ls -t "src-tauri/target/release/bundle/dmg/PDFRead_${VERSION}_"*.dmg 2>/dev/null | head -1 || true)
@@ -221,9 +224,10 @@ fi
 
 SHA256=$(shasum -a 256 "$RELEASE_DMG_PATH" | awk '{print $1}')
 
-if [ ! -d "$TAP_DIR/.git" ]; then
-  git clone "https://github.com/$TAP_REPO.git" "$TAP_DIR"
-fi
+echo "Refreshing Homebrew tap at $TAP_DIR ..."
+rm -rf "$TAP_DIR"
+mkdir -p "$TMP_DIR"
+git clone "https://github.com/$TAP_REPO.git" "$TAP_DIR"
 
 cd "$TAP_DIR"
 
